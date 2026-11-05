@@ -35,6 +35,12 @@ variable "private_ip" {
   default     = null
 }
 
+variable "iam_instance_profile" {
+  description = "IAM instance profile name (null = none)"
+  type        = string
+  default     = null
+}
+
 variable "associate_public_ip" {
   description = "Give the instance a public IP"
   type        = bool

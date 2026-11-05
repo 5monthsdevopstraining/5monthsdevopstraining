@@ -40,14 +40,15 @@ resource "aws_key_pair" "ec2" {
 module "public_ec2" {
   source = "./instance"
 
-  name_prefix         = local.name_prefix
-  purpose             = "publicapp"
-  vpc_id              = module.vpc.vpc_id
-  subnet_id           = module.vpc.public_subnet_ids["public1"]
-  private_ip          = "10.0.1.10" # fixed: used as PUBLIC_HOST in the Jenkinsfile
-  instance_type       = var.instance_type
-  key_name            = aws_key_pair.ec2.key_name
-  associate_public_ip = true
+  name_prefix          = local.name_prefix
+  purpose              = "publicapp"
+  vpc_id               = module.vpc.vpc_id
+  subnet_id            = module.vpc.public_subnet_ids["public1"]
+  private_ip           = "10.0.1.10" # fixed: used as PUBLIC_HOST in the Jenkinsfile
+  iam_instance_profile = aws_iam_instance_profile.app_ec2.name
+  instance_type        = var.instance_type
+  key_name             = aws_key_pair.ec2.key_name
+  associate_public_ip  = true
 
   ingress_rules = {
     http = {
@@ -122,14 +123,15 @@ resource "aws_eip" "jenkins" {
 module "private_ec2" {
   source = "./instance"
 
-  name_prefix         = local.name_prefix
-  purpose             = "privateapp"
-  vpc_id              = module.vpc.vpc_id
-  subnet_id           = module.vpc.private_subnet_ids["private1"]
-  private_ip          = "10.0.3.10" # fixed: used as PRIVATE_HOST in the Jenkinsfile
-  instance_type       = var.instance_type
-  key_name            = aws_key_pair.ec2.key_name
-  associate_public_ip = false
+  name_prefix          = local.name_prefix
+  purpose              = "privateapp"
+  vpc_id               = module.vpc.vpc_id
+  subnet_id            = module.vpc.private_subnet_ids["private1"]
+  private_ip           = "10.0.3.10" # fixed: used as PRIVATE_HOST in the Jenkinsfile
+  iam_instance_profile = aws_iam_instance_profile.app_ec2.name
+  instance_type        = var.instance_type
+  key_name             = aws_key_pair.ec2.key_name
+  associate_public_ip  = false
 
   ingress_rules = {
     ssh_from_public = {

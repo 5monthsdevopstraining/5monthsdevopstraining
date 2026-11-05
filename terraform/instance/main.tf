@@ -57,6 +57,7 @@ resource "aws_instance" "this" {
   associate_public_ip_address = var.associate_public_ip
   private_ip                  = var.private_ip
   key_name                    = var.key_name
+  iam_instance_profile        = var.iam_instance_profile
 
   user_data                   = var.user_data
   user_data_replace_on_change = true

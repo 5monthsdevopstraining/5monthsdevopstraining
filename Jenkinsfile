@@ -15,6 +15,7 @@ pipeline {
     PRIVATE_HOST = '10.0.3.10' // fixed in terraform/main.tf
     APP_NAME     = 'sample-app'
     AWS_REGION   = 'ap-south-1'
+    APP_PARAMS   = '/sample-dev-ap-south-1/app' // SSM path with S3/RDS settings (terraform/app_data.tf)
   }
 
   options {
@@ -46,7 +47,8 @@ pipeline {
   }
 }
 
-// Copies ./app to the server, builds it there with Docker and (re)starts the container.
+// Copies ./app to the server, builds it there with Docker and (re)starts the container
+// with S3/RDS settings (see deploy/start-app.sh).
 def deployTo(String host, int port) {
   withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
     withEnv(["HOST=${host}", "PORT=${port}"]) {
@@ -69,13 +71,12 @@ def deployTo(String host, int port) {
         '
 
         scp $SSH_OPTS -r app/. $SSH_USER@$HOST:/tmp/app/
+        scp $SSH_OPTS deploy/start-app.sh $SSH_USER@$HOST:/tmp/start-app.sh
 
         ssh $SSH_OPTS $SSH_USER@$HOST "
           set -e
           sudo docker build -t $APP_NAME:$BUILD_NUMBER -t $APP_NAME:latest /tmp/app
-          sudo docker rm -f $APP_NAME 2>/dev/null || true
-          sudo docker run -d --name $APP_NAME --restart unless-stopped -p $PORT:8080 \
-            -e AWS__Region=$AWS_REGION $APP_NAME:latest
+          bash /tmp/start-app.sh $APP_NAME $APP_NAME:latest $PORT $AWS_REGION $APP_PARAMS
           sudo docker image prune -f
           sudo docker builder prune -f
         "

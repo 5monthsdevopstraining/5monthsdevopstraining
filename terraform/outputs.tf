@@ -101,3 +101,16 @@ output "jenkins_webhook_url" {
   description = "Payload URL for the GitHub webhook"
   value       = "http://${aws_eip.jenkins.public_ip}:8080/github-webhook/"
 }
+
+output "s3_bucket" {
+  value = aws_s3_bucket.uploads.bucket
+}
+
+output "rds_endpoint" {
+  value = aws_db_instance.app.address
+}
+
+output "rds_password_cmd" {
+  description = "Show the RDS master password (stored in Secrets Manager)"
+  value       = "aws secretsmanager get-secret-value --profile saranya --region ${var.aws_region} --secret-id ${aws_db_instance.app.master_user_secret[0].secret_arn} --query SecretString --output text"
+}
