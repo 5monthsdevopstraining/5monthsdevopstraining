@@ -62,21 +62,21 @@ output "public_ec2_2_name" {
 }
 
 output "public_ec2_2_public_ip" {
-  value = module.public_ec2_2.public_ip
+  value = aws_eip.jenkins.public_ip
 }
 
 output "jenkins_url" {
   description = "Open in browser ~3 minutes after apply"
-  value       = "http://${module.public_ec2_2.public_ip}:8080"
+  value       = "http://${aws_eip.jenkins.public_ip}:8080"
 }
 
 output "jenkins_initial_password_cmd" {
   description = "Run this to get the Jenkins unlock password"
-  value       = "ssh -i ~/.ssh/sample-dev-key ec2-user@${module.public_ec2_2.public_ip} sudo cat /opt/jenkins_home/secrets/initialAdminPassword"
+  value       = "ssh -i ~/.ssh/sample-dev-key ec2-user@${aws_eip.jenkins.public_ip} sudo cat /opt/jenkins_home/secrets/initialAdminPassword"
 }
 
 output "ssh_public_ec2_2" {
-  value = "ssh -i ~/.ssh/sample-dev-key ec2-user@${module.public_ec2_2.public_ip}"
+  value = "ssh -i ~/.ssh/sample-dev-key ec2-user@${aws_eip.jenkins.public_ip}"
 }
 
 output "private_ec2_private_ip" {
@@ -99,5 +99,5 @@ output "public_ec2_private_ip" {
 
 output "jenkins_webhook_url" {
   description = "Payload URL for the GitHub webhook"
-  value       = "http://${module.public_ec2_2.public_ip}:8080/github-webhook/"
+  value       = "http://${aws_eip.jenkins.public_ip}:8080/github-webhook/"
 }

@@ -5,7 +5,8 @@ pipeline {
   agent any
 
   triggers {
-    githubPush()
+    githubPush()            // instant, if a GitHub webhook is configured (needs repo admin)
+    pollSCM('H/2 * * * *')  // fallback: check the branch for new commits every ~2 minutes
   }
 
   environment {

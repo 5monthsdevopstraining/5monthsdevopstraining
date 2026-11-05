@@ -2,6 +2,9 @@ locals {
   # <project>-<environment>-<region>   (modules add -<resource>-<purpose>)
   name_prefix = "${var.project}-${var.environment}-${var.aws_region}"
 
+  # Your current public IP, detected on every plan/apply unless my_ip_cidr is set
+  my_ip_cidr = var.my_ip_cidr != "" ? var.my_ip_cidr : "${chomp(data.http.my_ip.response_body)}/32"
+
   common_tags = {
     Project     = var.project
     Environment = var.environment
@@ -9,6 +12,10 @@ locals {
     CreatedBy   = var.created_by
     ManagedBy   = "Terraform"
   }
+}
+
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com"
 }
 
 module "vpc" {
@@ -51,7 +58,7 @@ module "public_ec2" {
     ssh = {
       description = "SSH from my laptop only"
       port        = 22
-      cidr_ipv4   = var.my_ip_cidr
+      cidr_ipv4   = local.my_ip_cidr
     }
     ssh_from_jenkins = {
       description              = "SSH from Jenkins (deployments)"
@@ -82,12 +89,12 @@ module "public_ec2_2" {
       jenkins = {
         description = "Jenkins UI from my laptop only"
         port        = 8080
-        cidr_ipv4   = var.my_ip_cidr
+        cidr_ipv4   = local.my_ip_cidr
       }
       ssh = {
         description = "SSH from my laptop only"
         port        = 22
-        cidr_ipv4   = var.my_ip_cidr
+        cidr_ipv4   = local.my_ip_cidr
       }
     },
     {
@@ -100,6 +107,16 @@ module "public_ec2_2" {
   )
 
   depends_on = [module.vpc]
+}
+
+# Fixed public IP for Jenkins, so its URL and the GitHub webhook survive stop/start
+resource "aws_eip" "jenkins" {
+  instance = module.public_ec2_2.instance_id
+  domain   = "vpc"
+
+  tags = {
+    Name = "${local.name_prefix}-eip-jenkins"
+  }
 }
 
 module "private_ec2" {

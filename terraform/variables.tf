@@ -67,8 +67,9 @@ variable "public_key_path" {
 }
 
 variable "my_ip_cidr" {
-  description = "Your laptop's public IP for SSH, e.g. 49.37.12.34/32"
+  description = "Your laptop's public IP for SSH/Jenkins, e.g. 49.37.12.34/32. Leave empty to auto-detect on every apply."
   type        = string
+  default     = ""
 }
 
 variable "github_hook_cidrs" {
