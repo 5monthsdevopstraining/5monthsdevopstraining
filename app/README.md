@@ -66,3 +66,4 @@ The detailed connection exception is written to the application log, not returne
 - `AWSSDK.S3` — uploads objects to S3
 - `Npgsql` — PostgreSQL database connectivity
 - `Swashbuckle.AspNetCore` — Swagger document and interactive Swagger UI
+Auto-deploy test
