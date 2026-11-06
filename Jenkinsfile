@@ -33,6 +33,9 @@ pipeline {
         }
 
         stage('Deploy') {
+            when {
+                expression { env.GIT_BRANCH == 'origin/Jebin-Icanio' }
+            }
             steps {
                 sshagent(credentials: ['app-server-ssh']) {
                     sh """
