@@ -1,4 +1,4 @@
-# S3 and PostgreSQL RDS Training API 
+# S3 and PostgreSQL RDS Training APIS 
 
 A small .NET 10 Web API for practicing Swagger, multipart file uploads to Amazon S3, and PostgreSQL connectivity checks against Amazon RDS.
 
