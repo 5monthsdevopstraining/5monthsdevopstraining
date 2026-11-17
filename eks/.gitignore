@@ -1,0 +1,4 @@
+# Never commit Terraform state or keys from anywhere under eks/
+*.tfstate
+*.tfstate.*
+*.pem

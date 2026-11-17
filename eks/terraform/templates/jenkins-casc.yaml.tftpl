@@ -1,0 +1,45 @@
+# Jenkins Configuration as Code, rendered by eks/terraform/jenkins.tf to /var/lib/jenkins/casc.yaml.
+# Jenkins applies it at every start, so change it here (and terraform apply), not in the UI.
+jenkins:
+  systemMessage: "EKS sample app CI/CD - configured by Terraform (eks/terraform/jenkins.tf)"
+  numExecutors: 1
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${admin_password}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: "${jenkins_url}"
+
+jobs:
+  - script: |
+      pipelineJob('${job_name}') {
+        description('Builds app/ and deploys it to the private EKS cluster on every push to ${branch}. Pipeline: eks/Jenkinsfile')
+        properties {
+          disableConcurrentBuilds()
+          pipelineTriggers {
+            triggers {
+              githubPush()                                  // GitHub webhook -> /github-webhook/
+              pollSCM { scmpoll_spec('H/2 * * * *') }       // fallback when no webhook is set up
+            }
+          }
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('${repo_url}') }
+                branch('*/${branch}')
+              }
+            }
+            scriptPath('eks/Jenkinsfile')
+            lightweight(true)
+          }
+        }
+      }

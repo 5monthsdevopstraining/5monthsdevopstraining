@@ -1,0 +1,69 @@
+# IMAGE_PLACEHOLDER, the "sample-app-config" ConfigMap (region, S3 bucket, folder) and the
+# "sample-app-db" Secret (RDS connection string) are filled in at deploy time by eks/scripts/deploy-app.sh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  namespace: sample-app
+  labels:
+    app: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      serviceAccountName: sample-app
+      # Spread the replicas over both AZs when possible
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: sample-app
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654 # "app" user built into the mcr.microsoft.com/dotnet/aspnet image
+      containers:
+        - name: app
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: sample-app-config
+            - secretRef:
+                name: sample-app-db
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /swagger/index.html
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /swagger/index.html
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

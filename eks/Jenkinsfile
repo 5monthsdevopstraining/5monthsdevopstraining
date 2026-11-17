@@ -1,0 +1,36 @@
+// Pipeline for the private EKS deployment. Jenkins runs on the deployer EC2 inside the EKS VPC
+// (eks/terraform/jenkins.tf creates the job "eks-sample-app" that points here).
+// Every push to the branch (GitHub webhook, or polling every 2 minutes) builds app/ with docker,
+// pushes it to ECR and rolls it out to the cluster with eks/scripts/deploy-app.sh.
+// Cluster, ECR, S3 and RDS settings come from /etc/eks-deploy.env (written by Terraform).
+
+pipeline {
+  agent any
+
+  triggers {
+    githubPush()            // instant, when the GitHub webhook is configured
+    pollSCM('H/2 * * * *')  // fallback: check the branch for new commits every ~2 minutes
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timeout(time: 30, unit: 'MINUTES')
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  stages {
+    stage('Build and deploy to EKS') {
+      steps {
+        // Image tag = build number + commit, so every build is traceable in ECR and in the pods
+        sh 'bash eks/scripts/deploy-app.sh "${BUILD_NUMBER}-$(git rev-parse --short HEAD)"'
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs() // the workspace is a full copy of the repo; free the disk for docker
+    }
+  }
+}
