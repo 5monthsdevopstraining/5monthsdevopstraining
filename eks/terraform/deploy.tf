@@ -33,7 +33,8 @@ locals {
 resource "terraform_data" "deploy" {
   triggers_replace = {
     deploy_hash = local.deploy_hash
-    setup_id    = terraform_data.deployer_setup.id # new EC2 or new settings
+    instance_id = aws_instance.deployer.id
+    deploy_env  = sha1(local.deploy_env) # cluster/ECR/S3/RDS settings (not Jenkins-only changes)
   }
 
   connection {
@@ -86,6 +87,7 @@ resource "terraform_data" "deploy" {
     aws_iam_role_policy.lb_controller,
     aws_route_table_association.private,
     terraform_data.ingress_cleanup,
+    terraform_data.deployer_setup, # writes /etc/eks-deploy.env
   ]
 }
 

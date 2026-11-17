@@ -39,7 +39,7 @@ jobs:
               }
             }
             scriptPath('eks/Jenkinsfile')
-            lightweight(true)
+            lightweight(false) // full checkout: records the repo/branch, so polling and the webhook work
           }
         }
       }
