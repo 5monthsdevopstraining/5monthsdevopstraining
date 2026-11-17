@@ -20,7 +20,7 @@ admin_cidrs = []
 
 # Jenkins deploys every push to this branch
 github_repo_url = "https://github.com/5monthsdevopstraining/5monthsdevopstraining.git"
-github_branch   = "saranya-icanio"
+github_branch   = "saranya-eks-jenkins"
 
 db_instance_class = "db.t4g.micro"
 

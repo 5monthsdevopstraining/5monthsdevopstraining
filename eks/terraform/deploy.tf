@@ -26,7 +26,7 @@ locals {
     type        = "ssh"
     host        = aws_eip.deployer.public_ip
     user        = "ec2-user"
-    private_key = tls_private_key.deployer.private_key_openssh3
+    private_key = tls_private_key.deployer.private_key_openssh
   }
 }
 
