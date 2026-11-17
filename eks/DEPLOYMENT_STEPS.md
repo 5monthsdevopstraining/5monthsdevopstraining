@@ -407,7 +407,7 @@ admin_cidrs = []
 
 # Jenkins deploys every push to this branch
 github_repo_url = "https://github.com/5monthsdevopstraining/5monthsdevopstraining.git"
-github_branch   = "saranya-icanio"
+github_branch   = "saranya-eks-jenkins"
 
 db_instance_class = "db.t4g.micro"
 
@@ -1807,7 +1807,7 @@ jobs:
               }
             }
             scriptPath('eks/Jenkinsfile')
-            lightweight(true)
+            lightweight(false) // full checkout: records the repo/branch, so polling and the webhook work
           }
         }
       }
@@ -1861,7 +1861,8 @@ locals {
 resource "terraform_data" "deploy" {
   triggers_replace = {
     deploy_hash = local.deploy_hash
-    setup_id    = terraform_data.deployer_setup.id # new EC2 or new settings
+    instance_id = aws_instance.deployer.id
+    deploy_env  = sha1(local.deploy_env) # cluster/ECR/S3/RDS settings (not Jenkins-only changes)
   }
 
   connection {
@@ -1914,6 +1915,7 @@ resource "terraform_data" "deploy" {
     aws_iam_role_policy.lb_controller,
     aws_route_table_association.private,
     terraform_data.ingress_cleanup,
+    terraform_data.deployer_setup, # writes /etc/eks-deploy.env
   ]
 }
 
@@ -1964,7 +1966,7 @@ resource "terraform_data" "ingress_cleanup" {
 **Key points:**
 
 - **Provisioners over SSH:** the `connection` block uses the deployer's public IP, `ec2-user` and the generated key. `file` provisioners copy `app/`, `eks/k8s/` and `deploy-app.sh` (like `scp`); `remote-exec` runs commands. Their output streams into the `terraform apply` log.
-- **When it redeploys:** `triggers_replace` holds a hash of every file in `app/` (minus `bin/`, `obj/`), the manifests and `deploy-app.sh`, plus the instance ID. Change any of them and the next `terraform apply` builds and deploys again. No change = nothing to do.
+- **When it redeploys:** `triggers_replace` holds a hash of every file in `app/` (minus `bin/`, `obj/`), the manifests and `deploy-app.sh`, the instance ID and the deploy settings (not Jenkins-only changes). Change any of them and the next `terraform apply` builds and deploys again. No change = nothing to do.
 - **Image tag** = the first 12 characters of that hash, so new code gets a new tag and the pods roll.
 - `depends_on` makes sure the nodes, CoreDNS, the deployer's access entry, Pod Identity and the API security group rule exist before the deploy starts.
 - **`ingress_cleanup`** has a destroy-time provisioner: on `terraform destroy` it deletes the Ingress (so the LB controller removes the ALB and its security groups, which Terraform doesn't know about and which would block deleting the VPC), then uninstalls the controller. It is a separate resource so that a redeploy doesn't delete the ALB. `on_failure = continue`: if the cluster is already broken, destroy still goes on.
@@ -2530,8 +2532,8 @@ terraform output jenkins_url               # http://<elastic-ip>:8080/
 terraform output -raw jenkins_admin_password; echo   # user: admin
 ```
 
-The job **eks-sample-app** is already there. Right after Jenkins starts, polling finds the branch and runs a
-first build (it waits for the Terraform deploy's lock, then deploys the same app again).
+The job **eks-sample-app** is already there. **Run it once by hand** (*Build Now*): a pipeline job only learns
+which repo/branch to watch from its first checkout, so polling and the webhook start working after that build.
 
 **Connect GitHub (instant builds):** in the GitHub repo -> *Settings* -> *Webhooks* -> *Add webhook*:
 
