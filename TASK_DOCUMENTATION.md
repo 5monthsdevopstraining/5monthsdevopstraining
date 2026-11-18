@@ -513,6 +513,48 @@ aws ssm start-session \
 
 Replace the Jenkins instance ID with the current Terraform output or EC2 instance ID.
 
+## 18A. Access the application by AWS LoadBalancer DNS
+
+Retrieve the AWS LoadBalancer hostname:
+
+```bash
+kubectl get service dotnet-app
+```
+
+Example DNS name:
+
+```text
+a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com
+```
+
+Use the DNS directly instead of `localhost:8081`:
+
+```bash
+curl http://<LOAD_BALANCER_DNS>
+```
+
+Open the same URL in a browser only from a network that can reach the private VPC.
+
+The Kubernetes Service is explicitly configured as internal:
+
+```yaml
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+```
+
+Keep the internal scheme for development or private applications. It allows access through the VPC, VPN, or Direct Connect.
+
+To expose the application to the public internet, change the annotation to:
+
+```yaml
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+```
+
+Internet-facing exposure is not enabled by default. Before enabling it, review public authentication, HTTPS/TLS, AWS security groups, WAF or application authorization controls, logging, and additional LoadBalancer and data-transfer costs.
+
 ## 19. Common errors
 
 ### Jenkins shows HTTP 503

@@ -76,6 +76,30 @@ kubectl get svc dotnet-app
 
 The Service is an internal load balancer and is not publicly reachable by default. Test it from a client that can route into the VPC. Use an internet-facing load balancer only after explicitly reviewing the security and cost implications.
 
+### Access the application with the AWS LoadBalancer DNS
+
+After the Service is created, retrieve the DNS name:
+
+```bash
+kubectl get service dotnet-app
+```
+
+Use the `EXTERNAL-IP` or AWS LoadBalancer hostname in the browser or with `curl`:
+
+```bash
+curl http://<LOAD_BALANCER_DNS>
+```
+
+The manifest explicitly uses the internal AWS LoadBalancer scheme. The DNS is therefore reachable only from an EC2 instance in the VPC, from an on-premises network connected through VPN or Direct Connect, or from another network that can route privately to the VPC.
+
+To make the application internet-facing, change the Service annotation to:
+
+```yaml
+service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+```
+
+Do this only after reviewing public exposure, authentication, TLS/HTTPS, security groups, WAF controls, and AWS costs. This project does not enable public LoadBalancer access by default.
+
 ## Cost and cleanup
 
 EKS control plane, EC2 nodes, NAT gateways, ECR storage and scans, load balancers, public IPv4 addresses, and data transfer can incur charges. The development default uses `t3.micro`, but Free Tier eligibility depends on the account and region; verify it before deployment. A single NAT gateway is selected by default to reduce development cost, while `single_nat_gateway = false` provides one NAT gateway per AZ for higher availability.
