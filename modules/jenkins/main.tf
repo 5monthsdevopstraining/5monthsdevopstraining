@@ -92,6 +92,14 @@ resource "aws_iam_role_policy" "jenkins" {
           "secretsmanager:DescribeSecret"
         ]
         Resource = aws_secretsmanager_secret.jenkins.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = var.rds_secret_arn == "" ? aws_secretsmanager_secret.jenkins.arn : var.rds_secret_arn
       }
     ]
   })

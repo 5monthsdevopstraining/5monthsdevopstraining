@@ -12,6 +12,7 @@ spec:
       labels:
         app: dotnet-app
     spec:
+      serviceAccountName: dotnet-app
       containers:
         - name: dotnet-app
           image: REPLACE_WITH_ECR_REPOSITORY_URL:v1
@@ -20,6 +21,17 @@ spec:
           env:
             - name: ASPNETCORE_URLS
               value: http://+:8080
+            - name: AWS__Region
+              value: ap-south-1
+            - name: S3__BucketName
+              value: dotnet-app-dev-artifacts
+            - name: S3__KeyPrefix
+              value: training-uploads
+            - name: ConnectionStrings__Rds
+              valueFrom:
+                secretKeyRef:
+                  name: dotnet-app-db
+                  key: connection-string
           readinessProbe:
             tcpSocket:
               port: 8080

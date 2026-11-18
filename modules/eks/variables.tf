@@ -39,3 +39,9 @@ variable "admin_principals" {
   type        = map(string)
   default     = {}
 }
+
+variable "s3_bucket_arn" {
+  description = "ARN of the application S3 bucket"
+  type        = string
+  default     = ""
+}

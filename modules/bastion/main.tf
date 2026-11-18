@@ -67,9 +67,14 @@ resource "aws_instance" "this" {
 
   user_data = <<-EOT
     #!/bin/bash
-    curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    curl -fL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
+    echo "export KUBECONFIG=/root/.kube/config" >> /etc/profile.d/kubeconfig.sh
   EOT
 
   tags = { Name = "${var.name}-bastion" }
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }

@@ -85,6 +85,25 @@ pipeline {
                         --name "${EKS_CLUSTER_NAME}" \
                         --region "${AWS_REGION}"
 
+                    echo "Retrieving database credentials from AWS Secrets Manager..."
+                    RDS_SECRET=$(aws secretsmanager get-secret-value \
+                        --secret-id "dotnet-app-dev-postgres-credentials" \
+                        --region "${AWS_REGION}" \
+                        --query 'SecretString' \
+                        --output text)
+
+                    DB_HOST=$(echo "${RDS_SECRET}" | jq -r '.host')
+                    DB_PORT=$(echo "${RDS_SECRET}" | jq -r '.port')
+                    DB_NAME=$(echo "${RDS_SECRET}" | jq -r '.dbname')
+                    DB_USER=$(echo "${RDS_SECRET}" | jq -r '.username')
+                    DB_PASS=$(echo "${RDS_SECRET}" | jq -r '.password')
+                    CONN_STRING="Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASS};SSL Mode=Require;Trust Server Certificate=true"
+
+                    kubectl create secret generic dotnet-app-db \
+                        --from-literal=connection-string="${CONN_STRING}" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+
+                    kubectl apply -f k8s/serviceaccount.yaml
                     kubectl apply -f k8s/service.yaml
                     kubectl apply -f k8s/deployment.yaml
 

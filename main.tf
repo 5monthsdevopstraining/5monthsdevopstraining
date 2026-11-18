@@ -80,6 +80,7 @@ module "jenkins" {
   allowed_cidr_blocks = var.jenkins_allowed_cidr_blocks
   repository_url      = "https://github.com/5monthsdevopstraining/5monthsdevopstraining.git"
   branch              = "manoj-eks-jenkins"
+  rds_secret_arn      = module.rds.secret_arn
   tags                = local.tags
 }
 
@@ -95,6 +96,7 @@ module "eks" {
   node_desired_size      = var.node_desired_size
   node_min_size          = var.node_min_size
   node_max_size          = var.node_max_size
+  s3_bucket_arn          = module.s3.bucket_arn
   allowed_security_groups = merge(
     { bastion = module.bastion.security_group_id },
     { jenkins = module.jenkins.security_group_id },

@@ -48,3 +48,7 @@ output "jenkins_secret_arn" {
   value     = module.jenkins.secret_arn
   sensitive = true
 }
+
+output "app_s3_role_arn" {
+  value = module.eks.app_s3_role_arn
+}
