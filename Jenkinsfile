@@ -103,6 +103,8 @@ pipeline {
                         --from-literal=connection-string="${CONN_STRING}" \
                         --dry-run=client -o yaml | kubectl apply -f -
 
+                    kubectl set env deployment/dotnet-app ConnectionStrings__Rds- >/dev/null 2>&1 || true
+
                     kubectl apply -f k8s/serviceaccount.yaml
                     kubectl apply -f k8s/service.yaml
                     kubectl apply -f k8s/deployment.yaml
