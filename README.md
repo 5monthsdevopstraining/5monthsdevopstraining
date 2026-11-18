@@ -1,5 +1,7 @@
 # .NET on private EKS
 
+For the complete repeatable implementation process, see [TASK_DOCUMENTATION.md](TASK_DOCUMENTATION.md).
+
 This project provisions a VPC, an ECR repository, an SSM-only bastion host, and a private-endpoint EKS cluster. The application is deployed from the `k8s/` manifests behind an internal AWS load balancer.
 
 ## Prerequisites
