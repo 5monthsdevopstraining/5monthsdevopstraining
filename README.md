@@ -74,7 +74,7 @@ kubectl get pods -l app=dotnet-app
 kubectl get svc dotnet-app
 ```
 
-The Service is an internal load balancer and is not publicly reachable by default. Test it from a client that can route into the VPC. Use an internet-facing load balancer only after explicitly reviewing the security and cost implications.
+The Service is currently configured as an internet-facing LoadBalancer for direct public access. Before production use, review authentication, TLS/HTTPS, security controls, WAF protections, and AWS costs.
 
 ### Access the application with the AWS LoadBalancer DNS
 
@@ -90,12 +90,12 @@ Use the `EXTERNAL-IP` or AWS LoadBalancer hostname in the browser or with `curl`
 curl http://<LOAD_BALANCER_DNS>
 ```
 
-The manifest explicitly uses the internal AWS LoadBalancer scheme. The DNS is therefore reachable only from an EC2 instance in the VPC, from an on-premises network connected through VPN or Direct Connect, or from another network that can route privately to the VPC.
+The manifest uses the internet-facing AWS LoadBalancer scheme. The DNS is reachable directly from the public internet.
 
-To make the application internet-facing, change the Service annotation to:
+To return to a private LoadBalancer, change the Service annotation to:
 
 ```yaml
-service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+service.beta.kubernetes.io/aws-load-balancer-scheme: internal
 ```
 
 Do this only after reviewing public exposure, authentication, TLS/HTTPS, security groups, WAF controls, and AWS costs. This project does not enable public LoadBalancer access by default.

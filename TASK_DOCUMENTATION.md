@@ -535,22 +535,22 @@ curl http://<LOAD_BALANCER_DNS>
 
 Open the same URL in a browser only from a network that can reach the private VPC.
 
-The Kubernetes Service is explicitly configured as internal:
-
-```yaml
-metadata:
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
-```
-
-Keep the internal scheme for development or private applications. It allows access through the VPC, VPN, or Direct Connect.
-
-To expose the application to the public internet, change the annotation to:
+The Kubernetes Service is currently configured as internet-facing:
 
 ```yaml
 metadata:
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+```
+
+Keep the internet-facing scheme only when public access is required. Internet-facing LoadBalancers can be reached directly from the public internet.
+
+To return to an internal LoadBalancer, change the annotation to:
+
+```yaml
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
 ```
 
 Internet-facing exposure is not enabled by default. Before enabling it, review public authentication, HTTPS/TLS, AWS security groups, WAF or application authorization controls, logging, and additional LoadBalancer and data-transfer costs.
