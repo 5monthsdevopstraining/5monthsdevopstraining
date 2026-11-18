@@ -1,0 +1,8 @@
+bin/
+obj/
+build-check/
+.vs/
+*.user
+*.suo
+.env
+appsettings.Local.json

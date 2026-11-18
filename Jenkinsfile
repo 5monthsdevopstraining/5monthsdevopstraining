@@ -11,8 +11,9 @@ pipeline {
         string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
         string(name: 'ECR_REPOSITORY_NAME', defaultValue: 'dotnet-app-dev/dotnet-app', description: 'ECR repository name')
         string(name: 'EKS_CLUSTER_NAME', defaultValue: 'dotnet-app-dev-eks', description: 'EKS cluster name')
-        string(name: 'PROJECT_FILE', defaultValue: 'dotnet-app.csproj', description: '.NET project file')
-        string(name: 'APP_DLL', defaultValue: 'dotnet-app.dll', description: 'Published .NET assembly')
+        string(name: 'PROJECT_FILE', defaultValue: 'app/dotnet.csproj', description: 'Path to the .NET project file')
+        string(name: 'APP_DLL', defaultValue: 'dotnet.dll', description: 'Application DLL name')
+
     }
 
     stages {
