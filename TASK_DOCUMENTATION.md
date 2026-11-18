@@ -555,6 +555,89 @@ metadata:
 
 Internet-facing exposure is not enabled by default. Before enabling it, review public authentication, HTTPS/TLS, AWS security groups, WAF or application authorization controls, logging, and additional LoadBalancer and data-transfer costs.
 
+## 18B. End-to-End Test Verification Evidence
+
+### 1. Swagger UI Availability
+
+```bash
+curl -I http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com/swagger/index.html
+```
+
+Output:
+```text
+HTTP/1.1 200 OK
+Content-Length: 735
+Content-Type: text/html;charset=utf-8
+Server: Kestrel
+```
+
+### 2. Document Upload via API
+
+```bash
+echo "%PDF-1.4 test document content for AWS EKS deployment" > /tmp/test-document.pdf
+curl -s -X POST -F "file=@/tmp/test-document.pdf;type=application/pdf" \
+  http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com/api/files/upload | jq .
+```
+
+Output:
+```json
+{
+  "id": "bac0f8d0-e667-4f26-995e-bf61a3eb73bb",
+  "fileName": "test-document.pdf",
+  "s3BucketName": "dotnet-app-dev-artifacts",
+  "s3ObjectKey": "training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf",
+  "contentType": "application/pdf",
+  "fileSize": 54,
+  "uploadedAt": "2026-11-18T19:59:55.4774256Z",
+  "bucket": "dotnet-app-dev-artifacts",
+  "key": "training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf",
+  "originalFileName": "test-document.pdf",
+  "sizeBytes": 54
+}
+```
+
+### 3. S3 Bucket Verification
+
+```bash
+aws s3 ls s3://dotnet-app-dev-artifacts/ --recursive --region ap-south-1
+```
+
+Output:
+```text
+2026-11-19 01:29:57         54 training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf
+```
+
+### 4. PostgreSQL Database Verification
+
+Run from the bastion host session:
+```bash
+export PGPASSWORD='<SECRET_PASSWORD>'
+psql -h dotnet-app-dev-postgres.cjiwkuog0e9g.ap-south-1.rds.amazonaws.com \
+  -U appadmin -d appdb \
+  -c "SELECT * FROM uploaded_files ORDER BY uploaded_at DESC LIMIT 10;"
+```
+
+Output:
+```text
+                  id                  |     file_name     |      s3_bucket_name      |                     s3_object_key                     |  content_type   | file_size |          uploaded_at          
+--------------------------------------+-------------------+--------------------------+-------------------------------------------------------+-----------------+-----------+-------------------------------
+ bac0f8d0-e667-4f26-995e-bf61a3eb73bb | test-document.pdf | dotnet-app-dev-artifacts | training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf | application/pdf |        54 | 2026-11-18 19:59:55.477425+00
+(1 row)
+```
+
+The database record and the S3 object key match.
+
+### 5. Document Retrieval Verification
+
+```bash
+curl -s http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com/api/files/bac0f8d0-e667-4f26-995e-bf61a3eb73bb
+```
+
+Output:
+```text
+%PDF-1.4 test document content for AWS EKS deployment
+```
+
 ## 19. Common errors
 
 ### Jenkins shows HTTP 503
