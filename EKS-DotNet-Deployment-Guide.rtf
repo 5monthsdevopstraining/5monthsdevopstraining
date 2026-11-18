@@ -1,0 +1,258 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Arial;}{\f1 Courier New;}}
+\paperw12240\paperh15840\margl1080\margr1080\margt900\margb900
+\fs24
+\qc\b\fs36 AWS EKS .NET 8 Deployment Guide\b0\fs24\par
+\qc Infrastructure, container build, Kubernetes deployment, verification, and troubleshooting\par
+\ql\par
+\b 1. Project Overview\b0\par
+This project provisions AWS infrastructure with Terraform and deploys a .NET 8 Web API to Amazon EKS. The application is packaged as a Docker image, stored in Amazon ECR, and deployed to private EKS worker nodes. An internal AWS Load Balancer exposes the application only to clients with VPC connectivity.\par
+\par
+The completed flow is:\par
+\bullet  Terraform creates the VPC, subnets, routing, NAT Gateway, ECR, bastion, and EKS cluster.\par
+\bullet  Docker builds the .NET 8 application image.\par
+\bullet  ECR stores the image.\par
+\bullet  Kubernetes creates two application replicas.\par
+\bullet  An internal LoadBalancer Service exposes the application on port 80 and forwards traffic to container port 8080.\par
+\bullet  SSM port forwarding allows a developer outside the VPC to open Swagger locally.\par
+\par
+\b 2. AWS Architecture\b0\par
+\f1 Developer laptop\par
+    | AWS CLI, Terraform, Docker, and SSM\par
+    v\par
+\f0 Private bastion EC2 instance\par
+    | private EKS API access\par
+    v\par
+Private EKS cluster\par
+    |\par
+    +-- two t3.micro worker nodes\par
+            |\par
+            +-- two dotnet-app pods\par
+\par
+The application Service creates an internal AWS Load Balancer. The Load Balancer is not public and cannot be opened directly from a normal home network.\par
+\par
+\b 3. Important Project Locations\b0\par
+Terraform root: /home/icanio-10009/Downloads/EKS task\par
+.NET application: /home/icanio-10009/Downloads/Sample-Application/dotnet\par
+Terraform entry point: main.tf\par
+Kubernetes deployment: k8s/deployment.yaml\par
+Kubernetes Service: k8s/service.yaml\par
+Dockerfile: /home/icanio-10009/Downloads/Sample-Application/dotnet/Dockerfile\par
+\par
+\b 4. Terraform State Backend\b0\par
+Terraform state is stored remotely in Amazon S3. The configured state bucket is:\par
+\f1 dotnet-app-terraform-state-123806349463\par
+\f0
+State key:\par
+\f1 dotnet-app/dev/terraform.tfstate\par
+\f0
+S3 native lockfiles are enabled with use_lockfile = true. This prevents two Terraform processes from changing the same state simultaneously. The bucket should have versioning, encryption, and public access blocking enabled.\par
+\par
+Initialize the backend with:\par
+\f1 terraform init -migrate-state -backend-config=backend.hcl\par
+\f0\par
+Never commit account-specific backend credentials or replace the backend bucket with an example placeholder.\par
+\par
+\b 5. Networking Resources\b0\par
+\b VPC\b0\par
+CIDR: 10.0.0.0/16. The VPC contains all private and public AWS resources.\par
+\par
+\b Public subnets\b0\par
+10.0.0.0/24 in ap-south-1a\par
+10.0.1.0/24 in ap-south-1b\par
+\par
+Public subnets host the Internet Gateway route and NAT Gateway.\par
+\par
+\b Private subnets\b0\par
+10.0.10.0/24 in ap-south-1a\par
+10.0.11.0/24 in ap-south-1b\par
+\par
+Private subnets host EKS worker nodes and the bastion. They do not receive public IP addresses.\par
+\par
+\b Internet Gateway\b0\par
+The Internet Gateway provides internet routing for public subnets.\par
+\par
+\b NAT Gateway\b0\par
+The NAT Gateway lets private resources make outbound connections without accepting inbound internet traffic. It is required for worker nodes to reach AWS services and download required resources. NAT Gateways are billable, so a single NAT Gateway is used for development cost control.\par
+\par
+\b Elastic IP\b0\par
+The NAT Gateway uses one Elastic IP address.\par
+\par
+\b 6. ECR Repository\b0\par
+The application image is stored at:\par
+\f1 123806349463.dkr.ecr.ap-south-1.amazonaws.com/dotnet-app-dev/dotnet-app\par
+\f0
+ECR is used because EKS worker nodes need a private container registry. Worker nodes have AmazonEC2ContainerRegistryReadOnly permission. The repository scans images on push and keeps the latest ten images through a lifecycle policy.\par
+\par
+\b 7. EKS Cluster\b0\par
+Cluster name: dotnet-app-dev-eks\par
+Region: ap-south-1\par
+Kubernetes version: 1.33\par
+Endpoint: private only\par
+\par
+The EKS API has private access enabled and public access disabled. This reduces exposure but means kubectl must run from the bastion, a VPN-connected client, Direct Connect, or another VPC-connected host.\par
+\par
+\b 8. IAM Resources\b0\par
+The project creates:\par
+\bullet  EKS cluster IAM role with AmazonEKSClusterPolicy.\par
+\bullet  Worker node IAM role with EKS worker, CNI, ECR read-only, and SSM policies.\par
+\bullet  Bastion IAM role with SSM management and EKS describe permissions.\par
+\bullet  Bastion instance profile.\par
+\bullet  IAM OIDC provider for the EKS cluster.\par
+\bullet  EKS access entry for the bastion.\par
+\bullet  AmazonEKSClusterAdminPolicy association for the bastion.\par
+\par
+For production, cluster-admin access should be replaced with least-privilege permissions.\par
+\par
+\b 9. Bastion Host\b0\par
+The bastion is an SSM-managed EC2 instance in a private subnet. SSH and inbound security group rules are not required. SSM is used for secure administration.\par
+\par
+Bastion instance ID: i-06cb07072fd8099e3\par
+\par
+Connect with:\par
+\f1 aws ssm start-session --target i-06cb07072fd8099e3 --region ap-south-1\par
+\f0\par
+The bastion is also used to run kubectl because the EKS API endpoint is private.\par
+\par
+\b 10. EKS Worker Nodes and Add-ons\b0\par
+Node group: dotnet-app-dev-eks-default\par
+Instance type: t3.micro\par
+Desired nodes: 2\par
+Minimum nodes: 1\par
+Maximum nodes: 3\par
+\par
+The node group uses Amazon Linux 2023 x86_64 images and runs in private subnets. The default was changed from t3.medium because the account rejected t3.medium as not Free Tier eligible. Free Tier eligibility varies by account and region.\par
+\par
+Managed add-ons:\par
+\bullet  CoreDNS: DNS resolution inside Kubernetes.\par
+\bullet  kube-proxy: Kubernetes Service networking on nodes.\par
+\bullet  VPC CNI: AWS VPC networking for pods.\par
+\par
+\b 11. .NET 8 Application\b0\par
+The application project is dotnet.csproj. Its target framework is net8.0 and its published assembly is dotnet.dll. The Dockerfile uses the .NET 8 SDK and ASP.NET runtime images. The application listens on port 8080.\par
+\par
+The application was verified with:\par
+\f1 dotnet restore\par
+dotnet build --configuration Release\par
+\f0\par
+The build output is:\par
+\f1 bin/Release/net8.0/dotnet.dll\par
+\f0\par
+\b 12. Build and Push the Image\b0\par
+From the application directory:\par
+\f1 cd /home/icanio-10009/Downloads/Sample-Application/dotnet\par
+\f0\par
+Authenticate to ECR:\par
+\f1 aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 123806349463.dkr.ecr.ap-south-1.amazonaws.com\par
+\f0\par
+Build the image:\par
+\f1 docker build -t 123806349463.dkr.ecr.ap-south-1.amazonaws.com/dotnet-app-dev/dotnet-app:v1 .\par
+\f0\par
+Push the image:\par
+\f1 docker push 123806349463.dkr.ecr.ap-south-1.amazonaws.com/dotnet-app-dev/dotnet-app:v1\par
+\f0\par
+The image used by the deployment was successfully pushed with tag v1.\par
+\par
+\b 13. Kubernetes Deployment\b0\par
+The Deployment creates two replicas. Two replicas provide basic availability and allow traffic to continue if one pod is restarted.\par
+\par
+The container exposes port 8080 and sets ASPNETCORE_URLS to http://+:8080. Readiness and liveness probes use TCP port 8080. CPU and memory requests reserve capacity, while limits prevent unlimited resource consumption.\par
+\par
+Apply the manifests from a VPC-connected host:\par
+\f1 kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml\par
+kubectl rollout status deployment/dotnet-app\par
+kubectl get pods -l app=dotnet-app\par
+kubectl get svc dotnet-app\par
+\f0\par
+\b 14. Kubernetes Service\b0\par
+The Service is type LoadBalancer and has an internal AWS Load Balancer annotation. Port 80 on the Load Balancer forwards to port 8080 in the pods. The Load Balancer is intentionally private.\par
+\par
+Current internal DNS name:\par
+\f1 internal-a490e07e72cc24c6ca6b258a65a7757c-1099363377.ap-south-1.elb.amazonaws.com\par
+\f0\par
+\b 15. Access Swagger from a Laptop\b0\par
+A browser outside the VPC cannot directly access the internal Load Balancer. Use SSM port forwarding through the bastion. Install the Session Manager plugin and keep the tunnel terminal open.\par
+\par
+\f1 PATH="$HOME/.local/bin:$PATH" aws ssm start-session --target i-06cb07072fd8099e3 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{"host":["internal-a490e07e72cc24c6ca6b258a65a7757c-1099363377.ap-south-1.elb.amazonaws.com"],"portNumber":["80"],"localPortNumber":["8080"]}' --region ap-south-1\par
+\f0\par
+Then open:\par
+\f1 http://localhost:8080/swagger\par
+\f0\par
+The tunnel was verified with HTTP status 200. If localhost refuses the connection, the SSM tunnel is not running or the Session Manager plugin is missing.\par
+\par
+\b 16. Verification Checklist\b0\par
+Terraform validation:\par
+\f1 terraform fmt -check -recursive\par
+terraform validate\par
+terraform plan\par
+\f0\par
+Expected final plan result:\par
+\f1 No changes. Your infrastructure matches the configuration.\par
+\f0\par
+Check the cluster:\par
+\f1 aws eks describe-cluster --name dotnet-app-dev-eks --region ap-south-1\par
+\f0\par
+Expected status: ACTIVE.\par
+\par
+Check worker nodes:\par
+\f1 aws eks describe-nodegroup --cluster-name dotnet-app-dev-eks --nodegroup-name dotnet-app-dev-eks-default --region ap-south-1\par
+\f0\par
+Expected status: ACTIVE.\par
+\par
+Check application pods:\par
+\f1 kubectl get pods -l app=dotnet-app\par
+\f0\par
+Expected result: two pods with READY 1/1 and STATUS Running.\par
+\par
+Check Swagger:\par
+\f1 curl -I http://localhost:8080/swagger/index.html\par
+\f0\par
+Expected result: HTTP 200.\par
+\par
+\b 17. Why Eight Pods May Appear\b0\par
+The application creates two pods. Other pods belong to Kubernetes system components:\par
+\bullet  2 dotnet-app pods.\par
+\bullet  2 CoreDNS pods.\par
+\bullet  2 VPC CNI pods.\par
+\bullet  2 kube-proxy pods.\par
+\par
+To view only application pods:\par
+\f1 kubectl get pods -l app=dotnet-app\par
+\f0\par
+\b 18. Troubleshooting Summary\b0\par
+\b Expired AWS credentials\b0\par
+Clear old environment variables and refresh the AWS login:\par
+\f1 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN\naws login\par
+\f0\par
+\b Stale Terraform lock\b0\par
+Only force-unlock after confirming no Terraform process is running. Use the lock ID shown in the Terraform error.\par
+\par
+\b Node group CREATE_FAILED\b0\par
+Check the node group health details. The original t3.medium setting was rejected by the account's Free Tier restriction. The current development default is t3.micro.\par
+\par
+\b kubectl downloads an XML error\b0\par
+Use an explicit Kubernetes client version matching the cluster:\par
+\f1 curl -fL https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl\par
+chmod 0755 /usr/local/bin/kubectl\par
+\f0\par
+\b kubectl connects to localhost:8080\b0\par
+Set the kubeconfig explicitly:\par
+\f1 export KUBECONFIG=/root/.kube/config\par
+\f0\par
+\b Browser cannot reach internal Load Balancer\b0\par
+Use SSM port forwarding and browse to localhost:8080. Do not make the Load Balancer public unless the security requirements explicitly allow it.\par
+\par
+\b 19. Costs and Cleanup\b0\par
+Potentially billable resources include EKS, NAT Gateway, Elastic IP, EC2 worker nodes, bastion EC2, internal Load Balancer, ECR storage and scans, CloudWatch logs, and data transfer. Development resources should be destroyed when no longer needed.\par
+\par
+Delete the Kubernetes workload:\par
+\f1 kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml\par
+\f0\par
+Destroy the Terraform infrastructure only after confirming the correct state and environment:\par
+\f1 terraform destroy\par
+\f0\par
+Never run terraform destroy against shared or production state without review.\par
+\par
+\b 20. Final Result\b0\par
+The completed environment contains a private EKS cluster, two healthy t3.micro worker nodes, a private ECR repository, an SSM-managed bastion, an internal Load Balancer, and a running .NET 8 application. The application deployment was verified with two Running pods and a successful HTTP 200 response from Swagger through the SSM tunnel.\par
+}

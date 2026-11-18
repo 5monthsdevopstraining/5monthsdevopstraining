@@ -1,0 +1,19 @@
+jenkins:
+  systemMessage: "EKS Jenkins CI/CD"
+
+jobs:
+  - script: >
+      pipelineJob('dotnet-eks-cicd') {
+        description('Builds the .NET image, pushes it to ECR, and deploys it to EKS')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote('https://github.com/5month5devopstraining/5month5devopstraining.git')
+                branch('*/manoj-eks-jenkins')
+              }
+            }
+            scriptPath('Jenkinsfile')
+          }
+        }
+      }

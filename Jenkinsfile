@@ -1,0 +1,92 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
+        string(name: 'ECR_REPOSITORY_NAME', defaultValue: 'dotnet-app-dev/dotnet-app', description: 'ECR repository name')
+        string(name: 'EKS_CLUSTER_NAME', defaultValue: 'dotnet-app-dev-eks', description: 'EKS cluster name')
+        string(name: 'PROJECT_FILE', defaultValue: 'dotnet-app.csproj', description: '.NET project file')
+        string(name: 'APP_DLL', defaultValue: 'dotnet-app.dll', description: 'Published .NET assembly')
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                sh '''
+                    test -f "${PROJECT_FILE}" || {
+                        echo "Missing ${PROJECT_FILE}. Set PROJECT_FILE to the repository's .csproj file."
+                        exit 1
+                    }
+                    command -v aws
+                    command -v docker
+                    command -v kubectl
+                '''
+            }
+        }
+
+        stage('Build and Push') {
+            steps {
+                sh '''
+                        export AWS_DEFAULT_REGION="${AWS_REGION}"
+
+                        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                        ECR_URL=$(aws ecr describe-repositories \
+                            --repository-names "${ECR_REPOSITORY_NAME}" \
+                            --query 'repositories[0].repositoryUri' \
+                            --output text)
+
+                        test -n "${ECR_URL}" && test "${ECR_URL}" != "None"
+
+                        IMAGE_TAG="build-${BUILD_NUMBER}-${GIT_COMMIT:0:12}"
+                        IMAGE_URI="${ECR_URL}:${IMAGE_TAG}"
+                        echo "${IMAGE_URI}" > .image-uri
+
+                        aws ecr get-login-password --region "${AWS_REGION}" |
+                            docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                        docker build \
+                            --build-arg PROJECT_FILE="${PROJECT_FILE}" \
+                            --build-arg APP_DLL="${APP_DLL}" \
+                            -t "${IMAGE_URI}" .
+                        docker push "${IMAGE_URI}"
+                    '''
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                sh '''
+                        export AWS_DEFAULT_REGION="${AWS_REGION}"
+                        aws eks update-kubeconfig \
+                            --name "${EKS_CLUSTER_NAME}" \
+                            --region "${AWS_REGION}"
+
+                        kubectl apply -f k8s/service.yaml
+                        kubectl apply -f k8s/deployment.yaml
+
+                        IMAGE_URI=$(cat .image-uri)
+                        kubectl set image deployment/dotnet-app dotnet-app="${IMAGE_URI}"
+                        kubectl rollout status deployment/dotnet-app --timeout=5m
+                        kubectl get pods -l app=dotnet-app
+                        kubectl get service dotnet-app
+                    '''
+            }
+        }
+    }
+
+    post {
+        cleanup {
+            sh '''
+                if test -f .image-uri; then
+                    docker rmi "$(cat .image-uri)" >/dev/null 2>&1 || true
+                fi
+            '''
+        }
+    }
+}
