@@ -9,7 +9,9 @@ jobs:
           cpsScm {
             scm {
               git {
-                remote('https://github.com/5month5devopstraining/5month5devopstraining.git')
+                remote {
+                  url('https://github.com/5monthsdevopstraining/5monthsdevopstraining.git')
+                }
                 branch('*/manoj-eks-jenkins')
               }
             }

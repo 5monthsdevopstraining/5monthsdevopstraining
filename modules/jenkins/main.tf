@@ -84,8 +84,36 @@ resource "aws_iam_role_policy" "jenkins" {
         Effect   = "Allow"
         Action   = ["eks:DescribeCluster", "eks:ListClusters"]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = aws_secretsmanager_secret.jenkins.arn
       }
     ]
+  })
+}
+
+resource "random_password" "jenkins" {
+  length           = 24
+  special          = true
+  override_special = "!#$%&*()-_=+"
+}
+
+resource "aws_secretsmanager_secret" "jenkins" {
+  name                    = "${var.name}-admin"
+  recovery_window_in_days = 7
+  tags                    = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "jenkins" {
+  secret_id = aws_secretsmanager_secret.jenkins.id
+  secret_string = jsonencode({
+    username = "admin"
+    password = random_password.jenkins.result
   })
 }
 
@@ -99,8 +127,17 @@ locals {
     #!/bin/bash
     set -euxo pipefail
     dnf update -y
-    dnf install -y docker git
+    dnf install -y docker git amazon-ssm-agent
     systemctl enable --now docker
+    systemctl enable --now amazon-ssm-agent
+
+    if ! swapon --show | grep -q /swapfile; then
+      fallocate -l 1G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
 
     mkdir -p /opt/jenkins
     git clone --branch ${var.branch} --single-branch ${var.repository_url} /opt/jenkins
@@ -114,6 +151,7 @@ locals {
       -v jenkins_home:/var/jenkins_home \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v /opt/jenkins/jenkins:/var/jenkins_home/casc_configs:ro \
+      -e JAVA_OPTS="-Xms256m -Xmx512m" \
       local/jenkins:lts
 
     chmod 666 /var/run/docker.sock

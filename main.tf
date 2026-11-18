@@ -78,7 +78,7 @@ module "jenkins" {
   vpc_id              = module.networking.vpc_id
   subnet_id           = module.networking.public_subnet_ids[0]
   allowed_cidr_blocks = var.jenkins_allowed_cidr_blocks
-  repository_url      = "https://github.com/5month5devopstraining/5month5devopstraining.git"
+  repository_url      = "https://github.com/5monthsdevopstraining/5monthsdevopstraining.git"
   branch              = "manoj-eks-jenkins"
   tags                = local.tags
 }
