@@ -106,10 +106,18 @@ Dockerfile
 Dockerfile.jenkins
 Jenkinsfile
 TASK_DOCUMENTATION.md
+app/
+  Controllers/
+    DatabaseController.cs
+    FilesController.cs
+  appsettings.json
+  dotnet.csproj
+  Program.cs
 jenkins/casc.yaml
 k8s/
   deployment.yaml
   service.yaml
+  serviceaccount.yaml
 modules/
   bastion/
   ecr/
@@ -335,65 +343,91 @@ For private repositories:
 
 Do not enter the PAT in Terraform, Jenkinsfile, shell scripts, or GitHub source files.
 
-## 13. Application Docker build
+## 13. Application Architecture & Docker build
 
-The Docker image uses .NET 8.
+The application is a .NET 8 Web API providing dual integration with Amazon S3 and Amazon RDS PostgreSQL.
 
-The repository must contain a `.csproj` file. Update pipeline parameters or defaults if the project is not named `dotnet-app.csproj`.
+### Application Dependencies
 
-The default Docker build arguments are:
+Defined in `app/dotnet.csproj`:
+* `AWSSDK.S3` (4.0.104.8): S3 document uploads and downloads.
+* `AWSSDK.SecurityToken` (4.1.0.2): AWS STS runtime dependency required for EKS IAM Roles for Service Accounts (IRSA) web identity authentication.
+* `Npgsql` (10.0.3): High-performance PostgreSQL database provider.
+* `Swashbuckle.AspNetCore` (10.3.1): OpenAPI / Swagger UI interactive documentation.
 
-- `PROJECT_FILE=dotnet-app.csproj`
-- `APP_DLL=dotnet-app.dll`
+### API Endpoints
 
-For a local test:
+1. **`GET /api/database/connection`**:
+   Checks whether the configured PostgreSQL RDS database accepts connections (`SELECT 1`).
+2. **`POST /api/files/upload`**:
+   Accepts multipart file uploads (up to 10 MB).
+   * Validates file size and type.
+   * Uploads object to S3 bucket `dotnet-app-dev-artifacts` under key prefix `training-uploads/`.
+   * Automatically creates PostgreSQL table `uploaded_files` if not present.
+   * Inserts metadata (`id`, `file_name`, `s3_bucket_name`, `s3_object_key`, `content_type`, `file_size`, `uploaded_at`) into PostgreSQL.
+   * **Compensating Rollback:** If the database insertion fails, the uploaded S3 object is immediately deleted to prevent orphaned data.
+3. **`GET /api/files`**:
+   Queries PostgreSQL and returns a list of all uploaded documents.
+4. **`GET /api/files/{id}`**:
+   Finds the document metadata in PostgreSQL and streams the original file back from S3.
+5. **`GET /swagger/index.html`**:
+   Interactive Swagger UI.
+
+### Multi-stage Docker Build
+
+The build uses `Dockerfile`:
+* **Stage 1 (Build):** `mcr.microsoft.com/dotnet/sdk:8.0` restores dependencies and compiles the application (`dotnet publish` in Release mode).
+* **Stage 2 (Runtime):** `mcr.microsoft.com/dotnet/aspnet:8.0` provides a lightweight, secure ASP.NET Core runtime image exposing port 8080.
+
+Build and test locally:
 
 ```bash
 docker build \
-  --build-arg PROJECT_FILE=dotnet-app.csproj \
-  --build-arg APP_DLL=dotnet-app.dll \
+  --build-arg PROJECT_FILE=app/dotnet.csproj \
+  --build-arg APP_DLL=dotnet.dll \
   -t dotnet-app:test .
 docker run --rm -p 8080:8080 \
   -e ASPNETCORE_URLS=http://+:8080 \
   dotnet-app:test
 ```
 
-Open `http://localhost:8080`.
-
 ## 14. Jenkins pipeline stages
 
-The `Jenkinsfile` contains these stages:
+The `Jenkinsfile` automates the entire CI/CD lifecycle across three declarative stages:
 
 ### Stage 1: Validate
 
-Checks:
-
-- `.csproj` exists
-- AWS CLI exists
-- Docker exists
-- kubectl exists
+Verifies prerequisite CLI tools and configuration inside the Jenkins container:
+* Project file `app/dotnet.csproj` existence
+* `aws` CLI availability
+* `docker` CLI and daemon socket reachability
+* `kubectl` binary availability
 
 ### Stage 2: Build and Push
 
-Uses the Jenkins EC2 instance role to:
-
-1. Read the AWS account ID.
-2. Describe the ECR repository.
-3. Authenticate Docker to ECR.
-4. Build the .NET Docker image.
-5. Tag it with `build-${BUILD_NUMBER}-${GIT_COMMIT}`.
-6. Push it to ECR.
+Uses the Jenkins EC2 IAM role:
+1. Obtains the caller AWS Account ID and describes the ECR repository.
+2. Authenticates Docker to Amazon ECR (`aws ecr get-login-password`).
+3. Determines the short commit hash (`git rev-parse --short=12 HEAD`).
+4. Builds the container image tagged as `build-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}`.
+5. Pushes the Docker image to Amazon ECR.
+6. Writes the image URI to `.image-uri` for downstream stages.
 
 ### Stage 3: Deploy to EKS
 
-Uses the EC2 IAM role to:
+Deploys the workload to the private Amazon EKS cluster:
+1. Updates `kubeconfig` for cluster `dotnet-app-dev-eks`.
+2. **Secrets Manager Integration:** Dynamically fetches database credentials from AWS Secrets Manager (`dotnet-app-dev-postgres-credentials`), parses host, port, dbname, username, and password using `jq`, and creates/updates the Kubernetes Secret `dotnet-app-db` with the connection string. No passwords exist in source code or manifests.
+3. Applies `k8s/serviceaccount.yaml` to configure IAM Roles for Service Accounts (IRSA).
+4. Applies `k8s/service.yaml` to expose the application via LoadBalancer.
+5. Applies `k8s/deployment.yaml` with container port 8080, readiness/liveness probes, and resource limits.
+6. Sets the new container image (`kubectl set image deployment/dotnet-app dotnet-app=${IMAGE_URI}`).
+7. Verifies rollout completion (`kubectl rollout status deployment/dotnet-app --timeout=5m`).
+8. Logs the status of active pods and services.
 
-1. Update `kubeconfig`.
-2. Apply `k8s/service.yaml`.
-3. Apply `k8s/deployment.yaml`.
-4. Update the Deployment image.
-5. Wait for the rollout.
-6. Print pods and service status.
+### Post-Build Cleanup
+
+Deletes the locally cached Docker image on the Jenkins host to conserve disk space on small instances.
 
 ## 15. Run the pipeline
 
@@ -416,19 +450,71 @@ APP_DLL=dotnet-app.dll
 
 Change the project or assembly values if the application names differ.
 
-## 16. Jenkins IAM requirements
+## 16. IAM Roles and Security Policies
 
-The EC2 Jenkins role allows:
+### A. Jenkins EC2 Instance Role (`dotnet-app-dev-jenkins`)
+The Jenkins EC2 role is granted least-privilege IAM permissions required for the CI/CD pipeline:
+- ECR authentication and image push/pull operations (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`).
+- EKS cluster discovery (`eks:DescribeCluster`, `eks:ListClusters`).
+- EKS cluster API access configured via EKS Access Entry (`aws_eks_access_entry` with `AmazonEKSClusterAdminPolicy`).
+- AWS Secrets Manager read access (`secretsmanager:GetSecretValue`) for retrieving RDS database credentials (`dotnet-app-dev-postgres-credentials`).
+- AWS Systems Manager (SSM) agent management (`AmazonSSMManagedInstanceCore`).
+- Security Group ingress rule allowing Jenkins EC2 to reach the private EKS API endpoint on port 443.
 
-- ECR authorization and image push/pull operations
-- `eks:DescribeCluster`
-- `eks:ListClusters`
-- SSM managed instance operations
-- Secrets Manager read access for Jenkins credentials
-
-EKS access is configured through an EKS access entry for the Jenkins role.
-
-The private EKS API endpoint security group includes the Jenkins security group.
+### B. Application Pod IAM Role via IRSA (`dotnet-app-dev-eks-app-s3`)
+To avoid baking static AWS IAM access keys into containers or Kubernetes manifests, the application pod uses AWS IAM Roles for Service Accounts (IRSA):
+1. **OIDC Provider:** The EKS cluster has an associated OpenID Connect (OIDC) identity provider:
+   `oidc.eks.ap-south-1.amazonaws.com/id/D89AE818788D75EEBC68D5D2DA53C67C`
+2. **IAM Trust Policy:** Allows the specific Kubernetes ServiceAccount `system:serviceaccount:default:dotnet-app` to assume the role via `sts:AssumeRoleWithWebIdentity`:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::123806349463:oidc-provider/oidc.eks.ap-south-1.amazonaws.com/id/D89AE818788D75EEBC68D5D2DA53C67C"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "oidc.eks.ap-south-1.amazonaws.com/id/D89AE818788D75EEBC68D5D2DA53C67C:sub": "system:serviceaccount:default:dotnet-app",
+             "oidc.eks.ap-south-1.amazonaws.com/id/D89AE818788D75EEBC68D5D2DA53C67C:aud": "sts.amazonaws.com"
+           }
+         }
+       }
+     ]
+   }
+   ```
+3. **IAM Permissions Policy:** Restricts S3 actions exclusively to the application bucket:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+         "Resource": "arn:aws:s3:::dotnet-app-dev-artifacts/*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": ["s3:ListBucket"],
+         "Resource": "arn:aws:s3:::dotnet-app-dev-artifacts"
+       }
+     ]
+   }
+   ```
+4. **Kubernetes ServiceAccount (`k8s/serviceaccount.yaml`):**
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: dotnet-app
+     namespace: default
+     annotations:
+       eks.amazonaws.com/role-arn: arn:aws:iam::123806349463:role/dotnet-app-dev-eks-app-s3
+   ```
+5. **Runtime Token Exchange:** Kubernetes projects an OIDC web identity token into `/var/run/secrets/eks.amazonaws.com/serviceaccount/token`. The .NET AWS SDK uses `AWSSDK.SecurityToken` to exchange this token with AWS STS for temporary credentials without requiring AWS credentials stored on the filesystem.
 
 ## 17. Verify AWS resources
 
@@ -638,9 +724,64 @@ Output:
 %PDF-1.4 test document content for AWS EKS deployment
 ```
 
-## 19. Common errors
+## 19. Common errors & Troubleshooting Guide
 
-### Jenkins shows HTTP 503
+### 1. .NET 8 IRSA STS Dependency: `Assembly AWSSDK.SecurityToken could not be found or loaded`
+
+* **Symptom:** File uploads fail with HTTP 500 or 502 with log:
+  ```text
+  System.IO.FileNotFoundException: Could not load file or assembly 'AWSSDK.SecurityToken, Version=3.3.0.0...'.
+  The system cannot find the file specified.
+  ```
+* **Root Cause:** When running on AWS EKS with IAM Roles for Service Accounts (IRSA), the AWS SDK detects `AWS_WEB_IDENTITY_TOKEN_FILE` and attempts an `AssumeRoleWithWebIdentity` call via AWS STS. The standalone package `AWSSDK.SecurityToken` is required at runtime to perform this token exchange.
+* **Resolution:** Add `AWSSDK.SecurityToken` to `app/dotnet.csproj`:
+  ```xml
+  <PackageReference Include="AWSSDK.SecurityToken" Version="4.1.0.2" />
+  <PropertyGroup>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+  </PropertyGroup>
+  ```
+
+### 2. Kubernetes Strategic Merge Patch Conflict: `valueFrom: Invalid value`
+
+* **Symptom:** `kubectl apply -f k8s/deployment.yaml` in the CI/CD pipeline fails with:
+  ```text
+  The Deployment "dotnet-app" is invalid: spec.template.spec.containers[0].env[4].valueFrom: Invalid value: "": may not be specified when `value` is not empty
+  ```
+* **Root Cause:** In earlier iterations, `ConnectionStrings__Rds` was defined with a static `value`. When switching to `valueFrom.secretKeyRef`, Kubernetes' strategic merge patch engine attempted to merge the existing object rather than replace it, leaving both `value` and `valueFrom` defined on the same environment key.
+* **Resolution:** In `Jenkinsfile`, clear the existing key before applying the manifest:
+  ```bash
+  kubectl set env deployment/dotnet-app ConnectionStrings__Rds- >/dev/null 2>&1 || true
+  kubectl apply -f k8s/deployment.yaml
+  ```
+
+### 3. Terraform State Lock Deadlock: `Error acquiring the state lock`
+
+* **Symptom:** `terraform plan` or `terraform apply` fails with:
+  ```text
+  Error: Error acquiring the state lock: ConditionalCheckFailedException / PreconditionFailed
+  Lock Info: ID: 03ad0254-2ca6-b7ff-1599-23fcab7c0ca4 ...
+  ```
+* **Root Cause:** A preceding Terraform process was terminated unexpectedly before releasing the remote state lock on S3/DynamoDB.
+* **Resolution:** Forcefully unlock the state using the Lock ID reported in the error message:
+  ```bash
+  terraform force-unlock -force 03ad0254-2ca6-b7ff-1599-23fcab7c0ca4
+  ```
+
+### 4. Bastion Host `kubectl` XML Download Error
+
+* **Symptom:** Running `kubectl` on the bastion instance produces:
+  ```text
+  /usr/local/bin/kubectl: line 1: syntax error near unexpected token '<'
+  ```
+* **Root Cause:** In the bastion EC2 user data, a dynamic curl of `$(curl -L -s https://dl.k8s.io/release/stable.txt)` failed or returned an AWS S3 `NoSuchKey` XML response due to transient DNS or rate limiting.
+* **Resolution:** Download the explicit, pinned Kubernetes release binary via SSM session:
+  ```bash
+  curl -fL https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+  chmod +x /usr/local/bin/kubectl
+  ```
+
+### 5. Jenkins shows HTTP 503
 
 This may mean Jenkins is starting, has a plugin error, or Configuration as Code failed.
 
