@@ -21,11 +21,13 @@ available after rebuilding the image. Back up the current Jenkins home before
 rebuilding; this Compose setup keeps using `/var/jenkins_home`. On the bastion:
 
 For a bastion created with the earlier bootstrap, use the `jenkins/` files from
-this repository (clone it with your GitHub URL or copy the files over). Then:
+this repository. Because the repository is public, clone over HTTPS (no SSH key
+is needed):
 
 ```bash
+git clone --branch akshay-eks https://github.com/5monthsdevopstraining/5monthsdevopstraining.git
 sudo tar -czf "$HOME/jenkins-home.tar.gz" -C /var/jenkins_home .
-cd /opt/eks-app/jenkins
+cd 5monthsdevopstraining/jenkins
 docker rm -f jenkins 2>/dev/null || true
 DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)" docker compose up -d --build
 ```
