@@ -18,6 +18,10 @@ for example `eks-sample-dev-ap-southeast-2-01`. Change `project`, `environment` 
 | `scripts/bootstrap-state.sh` | Creates the state bucket |
 | `../deploy/app.yaml` | Application Deployment, ClusterIP Service and Ingress |
 
+The controller policy includes `elasticloadbalancing:DescribeListenerAttributes`
+in addition to the upstream policy. The installed controller requires this
+read permission when reconciling the ALB.
+
 ## How traffic flows
 
 Internet -> ALB (port 80) -> pod IP.

@@ -12,8 +12,20 @@ data "http" "policy" {
 }
 
 resource "aws_iam_policy" "controller" {
-  name   = "policy-alb-controller-${var.name_suffix}"
-  policy = data.http.policy.response_body
+  name = "policy-alb-controller-${var.name_suffix}"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(
+      jsondecode(data.http.policy.response_body).Statement,
+      [
+        {
+          Effect   = "Allow"
+          Action   = ["elasticloadbalancing:DescribeListenerAttributes"]
+          Resource = "*"
+        }
+      ]
+    )
+  })
 }
 
 output "policy_arn" { value = aws_iam_policy.controller.arn }
