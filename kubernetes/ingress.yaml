@@ -1,0 +1,32 @@
+# The AWS Load Balancer Controller (installed by the Jenkins pipeline) turns this
+# Ingress into an internet-facing Application Load Balancer in the PUBLIC subnets.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dotnet-api
+  namespace: sample-app
+  labels:
+    app.kubernetes.io/name: dotnet-api
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip              # send traffic straight to pod IPs
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /swagger/v1/swagger.json
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    # SECURITY: this is open to the whole internet over plain HTTP (learning setup).
+    # Restrict it to your own public IP, for example: "203.0.113.10/32"
+    alb.ingress.kubernetes.io/inbound-cidrs: 0.0.0.0/0
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dotnet-api
+                port:
+                  number: 80

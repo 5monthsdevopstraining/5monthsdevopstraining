@@ -1,0 +1,86 @@
+#!/bin/bash
+# Bootstrap script for the Jenkins server (Amazon Linux 2023).
+# Runs once at first boot as root. Log: /var/log/jenkins-bootstrap.log
+set -euxo pipefail
+exec > >(tee -a /var/log/jenkins-bootstrap.log) 2>&1
+
+# ---- 1. Base packages: Java, Git, Docker, gettext (envsubst), jq
+# The pipeline restores and builds inside mcr.microsoft.com/dotnet/sdk:10.0,
+# so this instance does not install a .NET SDK.
+dnf update -y
+dnf install -y java-17-amazon-corretto-headless git docker gettext jq tar gzip unzip
+
+# AWS CLI v2 and the SSM agent are preinstalled on Amazon Linux 2023.
+aws --version
+systemctl enable --now amazon-ssm-agent || true
+
+# ---- 2. Docker
+systemctl enable --now docker
+
+# ---- 3. kubectl matching the cluster version (read from the cluster itself)
+CLUSTER_VERSION=""
+for i in $(seq 1 30); do
+  CLUSTER_VERSION=$(aws eks describe-cluster --name "${cluster_name}" --region "${aws_region}" --query cluster.version --output text) && break
+  sleep 20
+done
+KUBECTL_VERSION=$(curl -fsSL "https://dl.k8s.io/release/stable-$CLUSTER_VERSION.txt")
+curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+chmod 0755 /usr/local/bin/kubectl
+
+# ---- 4. Helm (used to install the AWS Load Balancer Controller)
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+ln -sf /usr/local/bin/helm /usr/bin/helm || true
+
+# ---- 5. Jenkins
+curl -fsSL -o /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+dnf install -y jenkins
+usermod -aG docker jenkins
+
+# Non-secret platform settings for the pipeline. NO access keys here: AWS access
+# comes from the instance's IAM role.
+mkdir -p /etc/systemd/system/jenkins.service.d
+cat > /etc/systemd/system/jenkins.service.d/platform.conf <<'CONF'
+[Service]
+Environment="AWS_REGION=${aws_region}"
+Environment="AWS_DEFAULT_REGION=${aws_region}"
+Environment="EKS_CLUSTER_NAME=${cluster_name}"
+Environment="VPC_ID=${vpc_id}"
+Environment="ECR_REPOSITORY_URL=${ecr_repository_url}"
+Environment="S3_BUCKET_NAME=${s3_bucket_name}"
+Environment="DB_HOST=${db_host}"
+Environment="DB_PORT=${db_port}"
+Environment="DB_NAME=${db_name}"
+Environment="DB_SECRET_ID=${db_secret_arn}"
+Environment="K8S_NAMESPACE=${k8s_namespace}"
+Environment="K8S_SERVICE_ACCOUNT=${k8s_service_account}"
+CONF
+
+# Non-secret settings for people who open an SSM shell, plus a helper that points
+# kubectl at the cluster (the API is private, so kubectl only works from here).
+cat > /etc/platform.env <<'ENVF'
+export AWS_REGION="${aws_region}"
+export AWS_DEFAULT_REGION="${aws_region}"
+export EKS_CLUSTER_NAME="${cluster_name}"
+export VPC_ID="${vpc_id}"
+export ECR_REPOSITORY_URL="${ecr_repository_url}"
+export S3_BUCKET_NAME="${s3_bucket_name}"
+export DB_HOST="${db_host}"
+export DB_PORT="${db_port}"
+export DB_NAME="${db_name}"
+export K8S_NAMESPACE="${k8s_namespace}"
+ENVF
+chmod 0644 /etc/platform.env
+
+cat > /usr/local/bin/setup-kubectl <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+source /etc/platform.env
+aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+kubectl get nodes
+SCRIPT
+chmod 0755 /usr/local/bin/setup-kubectl
+
+systemctl daemon-reload
+systemctl enable --now jenkins
+echo "Jenkins bootstrap finished"

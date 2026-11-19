@@ -1,0 +1,289 @@
+// Declarative pipeline for the original .NET 10 application -> ECR -> EKS.
+//
+// Application project: dotnet/dotnet.csproj
+// There is no test project for this application. The Test stage reports that
+// and does not run the removed sample tests.
+//
+// Security: there are NO AWS access keys here. The Jenkins EC2 instance has an
+// IAM role; the AWS CLI picks its temporary credentials up automatically.
+// Restore and build run inside the .NET 10 SDK container, so the Jenkins host
+// does not need a .NET SDK installed.
+// The non-secret platform settings (AWS_REGION, EKS_CLUSTER_NAME, ECR_REPOSITORY_URL,
+// S3_BUCKET_NAME, DB_HOST, ...) are set on the Jenkins service by Terraform.
+
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+        timeout(time: 40, unit: 'MINUTES')
+    }
+
+    parameters {
+        booleanParam(name: 'INSTALL_LB_CONTROLLER', defaultValue: true,
+                     description: 'Install/upgrade the AWS Load Balancer Controller (safe to repeat)')
+        string(name: 'LB_CONTROLLER_CHART_VERSION', defaultValue: '1.8.2',
+               description: 'Helm chart of the AWS Load Balancer Controller (1.8.2 = controller v2.8.2, matches the IAM policy in terraform/policies)')
+    }
+
+    environment {
+        KUBECONFIG        = "${WORKSPACE}/.kubeconfig"
+        APP_PROJECT       = 'dotnet/dotnet.csproj'
+        SDK_IMAGE         = 'mcr.microsoft.com/dotnet/sdk:10.0'
+        K8S_NAMESPACE_APP = 'sample-app'
+        DEPLOYMENT_NAME   = 'dotnet-api'
+        CONNECTION_SECRET = 'dotnet-api-connection'
+    }
+
+    stages {
+
+        // ---- 1. Checkout from GitHub
+        stage('Checkout') {
+            steps {
+                script {
+                    def scmVars = checkout scm
+                    env.GIT_SHA   = scmVars.GIT_COMMIT.take(7)
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHA}"
+                }
+                sh '''
+                    set -eu
+                    for v in AWS_REGION EKS_CLUSTER_NAME ECR_REPOSITORY_URL S3_BUCKET_NAME DB_HOST DB_PORT DB_NAME DB_SECRET_ID VPC_ID; do
+                      if [ -z "$(printenv "$v" || true)" ]; then
+                        echo "Missing platform setting: $v (Terraform sets it on the Jenkins service)"; exit 1
+                      fi
+                    done
+                    test -f "$APP_PROJECT"
+                    echo "Application project: $APP_PROJECT"
+                    echo "Image tag will be: ${IMAGE_TAG:-unset}"
+                '''
+                echo "Image tag: ${env.IMAGE_TAG}"
+            }
+        }
+
+        // ---- 2. Restore .NET dependencies inside the SDK image
+        stage('Restore') {
+            steps {
+                sh '''
+                    set -eu
+                    docker pull "$SDK_IMAGE"
+                    docker run --rm \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -e DOTNET_CLI_HOME=/tmp/dotnet-home \
+                      -e NUGET_PACKAGES=/tmp/nuget \
+                      -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+                      -e DOTNET_NOLOGO=1 \
+                      -v "$WORKSPACE:/src" \
+                      -w /src \
+                      "$SDK_IMAGE" \
+                      dotnet restore "$APP_PROJECT"
+                '''
+            }
+        }
+
+        // ---- 3. Build the original application
+        stage('Build') {
+            steps {
+                sh '''
+                    set -eu
+                    docker run --rm \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -e DOTNET_CLI_HOME=/tmp/dotnet-home \
+                      -e NUGET_PACKAGES=/tmp/nuget \
+                      -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+                      -e DOTNET_NOLOGO=1 \
+                      -v "$WORKSPACE:/src" \
+                      -w /src \
+                      "$SDK_IMAGE" \
+                      dotnet build "$APP_PROJECT" -c Release --no-restore
+                '''
+            }
+        }
+
+        // ---- 4. Test
+        // The original application has no test project. Do not run tests that
+        // belonged to the removed sample API.
+        stage('Test') {
+            steps {
+                sh '''
+                    set -eu
+                    echo "No test project exists for dotnet/dotnet.csproj."
+                    echo "The sample tests that targeted src/DotNet8Api were removed and are not executed."
+                    echo "Skipping automated tests. Docker build, push, and deploy continue."
+                    if [ -d tests ] && find tests -name '*.csproj' -print -quit | grep -q .; then
+                      echo "Unexpected test project found under tests/. Refusing to guess which one to run."
+                      find tests -name '*.csproj'
+                      exit 1
+                    fi
+                '''
+            }
+        }
+
+        // ---- 5. Docker build (SDK stage inside docker/Dockerfile)
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    set -eu
+                    docker build -f docker/Dockerfile -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+                '''
+            }
+        }
+
+        // ---- 6 + 7. Log in to ECR (IAM role) and push
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                    set -eu
+                    REGISTRY="${ECR_REPOSITORY_URL%%/*}"
+                    aws ecr get-login-password --region "$AWS_REGION" \
+                      | docker login --username AWS --password-stdin "$REGISTRY"
+                    docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+                '''
+            }
+        }
+
+        // ---- Cluster access (+ one-time add-on: AWS Load Balancer Controller)
+        stage('Cluster Setup') {
+            steps {
+                sh '''
+                    set -eu
+                    aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
+                    kubectl get nodes
+                '''
+                script {
+                    if (params.INSTALL_LB_CONTROLLER) {
+                        sh '''
+                            set -eu
+                            helm repo add eks https://aws.github.io/eks-charts
+                            helm repo update
+                            helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+                              --namespace kube-system \
+                              --version "$LB_CONTROLLER_CHART_VERSION" \
+                              --set clusterName="$EKS_CLUSTER_NAME" \
+                              --set region="$AWS_REGION" \
+                              --set vpcId="$VPC_ID" \
+                              --set serviceAccount.create=true \
+                              --set serviceAccount.name=aws-load-balancer-controller \
+                              --wait --timeout 5m
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ---- 8. Update the Kubernetes deployment
+        stage('Deploy') {
+            steps {
+                sh '''
+                    set -eu
+                    export IMAGE_URI="$ECR_REPOSITORY_URL:$IMAGE_TAG"
+                    VARS='${IMAGE_URI} ${AWS_REGION} ${S3_BUCKET_NAME}'
+
+                    kubectl apply -f kubernetes/namespace.yaml
+                    kubectl apply -f kubernetes/service-account.yaml
+
+                    # The application reads ConnectionStrings:Rds. It does not call
+                    # Secrets Manager itself. Copy the RDS-managed username and
+                    # password into a Kubernetes Secret. Do not print the secret.
+                    SECRET_JSON=$(aws secretsmanager get-secret-value \
+                      --secret-id "$DB_SECRET_ID" \
+                      --region "$AWS_REGION" \
+                      --query SecretString \
+                      --output text)
+                    jq -e 'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
+                      >/dev/null <<<"$SECRET_JSON"
+                    jq -n \
+                      --arg ns "$K8S_NAMESPACE_APP" \
+                      --arg name "$CONNECTION_SECRET" \
+                      --arg host "$DB_HOST" \
+                      --arg port "$DB_PORT" \
+                      --arg db "$DB_NAME" \
+                      --argjson secret "$SECRET_JSON" \
+                      '{
+                        apiVersion: "v1",
+                        kind: "Secret",
+                        metadata: {
+                          name: $name,
+                          namespace: $ns,
+                          labels: {"app.kubernetes.io/name": "dotnet-api"}
+                        },
+                        type: "Opaque",
+                        stringData: {
+                          "ConnectionStrings__Rds": "Host=\($host);Port=\($port);Database=\($db);Username=\($secret.username);Password=\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
+                        }
+                      }' | kubectl apply -f -
+                    unset SECRET_JSON
+
+                    envsubst "$VARS" < kubernetes/configmap.yaml  | kubectl apply -f -
+                    envsubst "$VARS" < kubernetes/deployment.yaml | kubectl apply -f -
+                    kubectl apply -f kubernetes/service.yaml
+                    kubectl apply -f kubernetes/ingress.yaml
+                '''
+            }
+        }
+
+        // ---- 9. Wait for the rollout
+        stage('Wait for Rollout') {
+            steps {
+                sh 'kubectl -n "$K8S_NAMESPACE_APP" rollout status deployment/"$DEPLOYMENT_NAME" --timeout=300s'
+            }
+        }
+
+        // ---- 10. Verify pods and service
+        stage('Verify') {
+            steps {
+                sh '''
+                    set -eu
+                    kubectl -n "$K8S_NAMESPACE_APP" get pods -o wide
+                    kubectl -n "$K8S_NAMESPACE_APP" get svc "$DEPLOYMENT_NAME"
+                    kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME"
+                    kubectl -n "$K8S_NAMESPACE_APP" get secret "$CONNECTION_SECRET" >/dev/null
+
+                    DESIRED=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" -o jsonpath='{.spec.replicas}')
+                    READY=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" -o jsonpath='{.status.readyReplicas}')
+                    echo "Ready replicas: ${READY:-0}/$DESIRED"
+                    [ "${READY:-0}" = "$DESIRED" ]
+
+                    ENDPOINTS=$(kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME" -o jsonpath='{.subsets[*].addresses[*].ip}')
+                    [ -n "$ENDPOINTS" ] || { echo "Service has no endpoints"; exit 1; }
+
+                    NOT_READY=$(kubectl -n "$K8S_NAMESPACE_APP" get pods -l app.kubernetes.io/name="$DEPLOYMENT_NAME" \
+                      --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
+                    [ "$NOT_READY" = "0" ] || { echo "One or more pods are not Running"; exit 1; }
+
+                    echo "Load balancer address (may take a few minutes to appear on the first deploy):"
+                    kubectl -n "$K8S_NAMESPACE_APP" get ingress "$DEPLOYMENT_NAME" \
+                      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true
+                    echo
+                '''
+            }
+        }
+    }
+
+    post {
+        failure {
+            // Best effort: if a bad version was rolled out, go back to the previous one.
+            sh '''
+                set -eu
+                if [ -f "$KUBECONFIG" ]; then
+                  echo "Rolling back deployment/$DEPLOYMENT_NAME in namespace $K8S_NAMESPACE_APP"
+                  kubectl -n "$K8S_NAMESPACE_APP" rollout undo deployment/"$DEPLOYMENT_NAME" || true
+                  kubectl -n "$K8S_NAMESPACE_APP" rollout status deployment/"$DEPLOYMENT_NAME" --timeout=180s || true
+                else
+                  echo "No kubeconfig from this build. Nothing to roll back."
+                fi
+            '''
+        }
+        // ---- 11. Clean up local Docker images and credentials
+        always {
+            sh '''
+                docker rmi "$ECR_REPOSITORY_URL:$IMAGE_TAG" || true
+                docker image prune -f || true
+                docker logout "${ECR_REPOSITORY_URL%%/*}" || true
+                rm -f "$KUBECONFIG"
+            '''
+        }
+    }
+}

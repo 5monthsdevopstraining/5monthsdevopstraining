@@ -1,0 +1,19 @@
+# Non-secret settings only. The ${...} placeholders are filled in by the Jenkins
+# pipeline (envsubst) from values Terraform gave the Jenkins server.
+# The database password is not here. Jenkins copies it from AWS Secrets Manager
+# into the Kubernetes Secret dotnet-api-connection (ConnectionStrings__Rds).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dotnet-api-config
+  namespace: sample-app
+  labels:
+    app.kubernetes.io/name: dotnet-api
+data:
+  AWS__Region: "${AWS_REGION}"
+  AWS_REGION: "${AWS_REGION}"
+  AWS_DEFAULT_REGION: "${AWS_REGION}"
+  S3__BucketName: "${S3_BUCKET_NAME}"
+  S3__KeyPrefix: "training-uploads"
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_HTTP_PORTS: "8080"

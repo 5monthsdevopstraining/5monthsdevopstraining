@@ -1,0 +1,27 @@
+# .NET
+bin/
+obj/
+build-check/
+*.user
+.vs/
+TestResults/
+test-results/
+
+# Terraform (state files and variable files can contain sensitive data)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+terraform.tfvars
+*.auto.tfvars
+crash.log
+
+# Secrets and local files - never commit
+.env
+*.pem
+*.key
+.aws/
+.kubeconfig
+kubeconfig*
+sample.pdf

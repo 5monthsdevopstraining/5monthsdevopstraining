@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is git-ignored.
+#   cp terraform.tfvars.example terraform.tfvars
+
+aws_region  = "ap-south-1"
+aws_profile = "dotnet8-dev"
+
+# Two Availability Zones that exist in your region. Check with:
+#   aws ec2 describe-availability-zones --region ap-south-1 --profile dotnet8-dev \
+#     --query 'AvailabilityZones[].ZoneName' --output text
+availability_zones = ["ap-south-1a", "ap-south-1b"]
+
+project_name = "dotnet8-eks"
+environment  = "dev"
+
+# Leave commented to use the default EKS version offered by AWS.
+# kubernetes_version = "1.33"
+
+node_instance_types = ["t3.medium"]
+node_desired_size   = 2
+node_min_size       = 1
+node_max_size       = 3
+
+jenkins_instance_type = "t3.medium"
+db_instance_class     = "db.t4g.micro"

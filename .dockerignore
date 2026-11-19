@@ -1,0 +1,32 @@
+# Docker reads THIS file because the build context is the repository root.
+# docker/.dockerignore is kept in sync for people who inspect the docker/ folder.
+**/bin/
+**/obj/
+**/build-check/
+**/.vs/
+**/.vscode/
+**/*.user
+.git/
+.gitignore
+**/.git
+**/.github
+.dockerignore
+terraform/
+kubernetes/
+jenkins/
+scripts/
+docs/
+tests/
+src/
+**/*.md
+**/*.tfstate*
+**/*.tfstate
+**/.terraform/
+**/terraform.tfvars
+**/*.auto.tfvars
+**/.env
+**/*.pem
+**/*.key
+**/.aws/
+**/.kubeconfig
+**/kubeconfig*
