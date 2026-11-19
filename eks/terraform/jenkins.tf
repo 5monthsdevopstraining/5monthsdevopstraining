@@ -1,4 +1,4 @@
-## Jenkins on the deployer EC2 (installed by scripts/deployer.sh). Terraform configures it over SSH:
+#0## Jenkins on the deployer EC2 (installed by scripts/deployer.sh). Terraform configures it over SSH:
 #   /etc/eks-deploy.env       -> cluster, ECR, S3 and RDS settings read by eks/scripts/deploy-app.sh
 #   /var/lib/jenkins/casc.yaml -> admin user + the pipeline job (templates/jenkins-casc.yaml.tftpl)
 # The job runs eks/Jenkinsfile on every push to var.github_branch (GitHub webhook, or polling every 2 min).
