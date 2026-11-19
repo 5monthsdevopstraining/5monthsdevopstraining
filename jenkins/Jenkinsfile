@@ -192,8 +192,9 @@ pipeline {
                       --region "$AWS_REGION" \
                       --query SecretString \
                       --output text)
-                    jq -e 'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
-                      >/dev/null <<<"$SECRET_JSON"
+                    printf '%s' "$SECRET_JSON" | jq -e \
+                      'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
+                      >/dev/null
                     jq -n \
                       --arg ns "$K8S_NAMESPACE_APP" \
                       --arg name "$CONNECTION_SECRET" \
@@ -211,7 +212,7 @@ pipeline {
                         },
                         type: "Opaque",
                         stringData: {
-                          "ConnectionStrings__Rds": "Host=\($host);Port=\($port);Database=\($db);Username=\($secret.username);Password=\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
+                          "ConnectionStrings__Rds": "Host=\\($host);Port=\\($port);Database=\\($db);Username=\\($secret.username);Password=\\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
                         }
                       }' | kubectl apply -f -
                     unset SECRET_JSON
