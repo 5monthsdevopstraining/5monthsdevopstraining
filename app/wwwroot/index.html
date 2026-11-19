@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AWS Cloud Health Check & Dashboard</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            padding: 2rem 1rem;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            color: #1e293b;
+        }
+
+        p.subtitle {
+            color: var(--text-muted);
+            font-size: 1rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        @media (max-width: 640px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -2px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .card-icon {
+            font-size: 1.75rem;
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .card-desc {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 1.25rem;
+            min-height: 40px;
+        }
+
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.25rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status-box {
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            display: none;
+            word-break: break-all;
+        }
+
+        .status-ok {
+            display: block;
+            background-color: #f0fdf4;
+            color: var(--success);
+            border: 1px solid #bbf7d0;
+        }
+
+        .status-fail {
+            display: block;
+            background-color: #fef2f2;
+            color: var(--danger);
+            border: 1px solid #fecaca;
+        }
+
+        .status-loading {
+            display: block;
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+        }
+
+        .full-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+
+        .nav-links {
+            text-align: center;
+            margin-top: 2rem;
+            font-size: 0.9rem;
+        }
+
+        .nav-links a {
+            color: var(--primary);
+            text-decoration: none;
+            margin: 0 1rem;
+            font-weight: 500;
+        }
+
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>EKS Application Health Dashboard</h1>
+            <p class="subtitle">Private EKS Cluster &bull; PostgreSQL RDS &bull; Amazon S3 Endpoint Connection</p>
+        </header>
+
+        <div class="grid">
+            <!-- S3 Card -->
+            <div class="card">
+                <div>
+                    <div class="card-header">
+                        <div class="card-icon">🪣</div>
+                        <div class="card-title">Amazon S3</div>
+                    </div>
+                    <div class="card-desc">Tests connectivity to the private Amazon S3 bucket via AWS VPC Gateway Endpoint.</div>
+                </div>
+                <div>
+                    <button id="btn-s3" class="btn" style="width: 100%;" onclick="checkS3()">
+                        <span>Check S3 Connection</span>
+                    </button>
+                    <div id="status-s3" class="status-box"></div>
+                </div>
+            </div>
+
+            <!-- RDS Card -->
+            <div class="card">
+                <div>
+                    <div class="card-header">
+                        <div class="card-icon">🐘</div>
+                        <div class="card-title">Amazon RDS PostgreSQL</div>
+                    </div>
+                    <div class="card-desc">Tests connectivity and executes `SELECT 1` on the PostgreSQL RDS instance inside VPC.</div>
+                </div>
+                <div>
+                    <button id="btn-rds" class="btn" style="width: 100%;" onclick="checkRDS()">
+                        <span>Check RDS Connection</span>
+                    </button>
+                    <div id="status-rds" class="status-box"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Optional S3 Upload Test Section -->
+        <div class="full-card">
+            <h2 style="font-size: 1.15rem; margin-bottom: 0.75rem;">S3 File Upload Test</h2>
+            <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Upload a test file directly into the configured S3 bucket to verify read and write access.
+            </p>
+            <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                <input type="file" id="upload-file" style="font-size: 0.875rem;">
+                <button class="btn" onclick="uploadFile()">Upload File</button>
+            </div>
+            <div id="status-upload" class="status-box" style="margin-top: 1rem;"></div>
+        </div>
+
+        <div class="nav-links">
+            <a href="/swagger" target="_blank">&rarr; Interactive Swagger API Documentation</a>
+            <a href="/healthz" target="_blank">&rarr; Container Liveness Probe (/healthz)</a>
+        </div>
+    </div>
+
+    <script>
+        async function checkS3() {
+            const btn = document.getElementById('btn-s3');
+            const statusBox = document.getElementById('status-s3');
+            btn.disabled = true;
+            statusBox.className = 'status-box status-loading';
+            statusBox.innerHTML = 'Connecting to Amazon S3...';
+
+            try {
+                const response = await fetch('/api/files/connection');
+                const data = await response.json();
+                if (response.ok && data.status === 'connected') {
+                    statusBox.className = 'status-box status-ok';
+                    statusBox.innerHTML = '<strong>[OK] HEALTH CHECK PASSED</strong><br>' + (data.message || 'S3 connection succeeded.');
+                } else {
+                    statusBox.className = 'status-box status-fail';
+                    statusBox.innerHTML = '<strong>[FAILED]</strong> ' + (data.message || 'Could not connect to S3.');
+                }
+            } catch (err) {
+                statusBox.className = 'status-box status-fail';
+                statusBox.innerHTML = '<strong>[ERROR]</strong> Network error: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function checkRDS() {
+            const btn = document.getElementById('btn-rds');
+            const statusBox = document.getElementById('status-rds');
+            btn.disabled = true;
+            statusBox.className = 'status-box status-loading';
+            statusBox.innerHTML = 'Connecting to RDS PostgreSQL...';
+
+            try {
+                const response = await fetch('/api/database/connection');
+                const data = await response.json();
+                if (response.ok && data.status === 'connected') {
+                    statusBox.className = 'status-box status-ok';
+                    statusBox.innerHTML = '<strong>[OK] HEALTH CHECK PASSED</strong><br>' + (data.message || 'PostgreSQL RDS connection succeeded.');
+                } else {
+                    statusBox.className = 'status-box status-fail';
+                    statusBox.innerHTML = '<strong>[FAILED]</strong> ' + (data.message || 'Could not connect to RDS.');
+                }
+            } catch (err) {
+                statusBox.className = 'status-box status-fail';
+                statusBox.innerHTML = '<strong>[ERROR]</strong> Network error: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('upload-file');
+            const statusBox = document.getElementById('status-upload');
+            if (!fileInput.files.length) {
+                alert('Please choose a file first.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            statusBox.className = 'status-box status-loading';
+            statusBox.innerHTML = 'Uploading to Amazon S3...';
+
+            try {
+                const response = await fetch('/api/files/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    statusBox.className = 'status-box status-ok';
+                    statusBox.innerHTML = `<strong>[OK] File uploaded successfully!</strong><br>Bucket: ${data.bucket}<br>Key: ${data.key}<br>Size: ${data.sizeBytes} bytes`;
+                } else {
+                    statusBox.className = 'status-box status-fail';
+                    statusBox.innerHTML = '<strong>[FAILED]</strong> ' + (data.message || data.detail || 'Upload failed.');
+                }
+            } catch (err) {
+                statusBox.className = 'status-box status-fail';
+                statusBox.innerHTML = '<strong>[ERROR]</strong> ' + err.message;
+            }
+        }
+    </script>
+</body>
+</html>

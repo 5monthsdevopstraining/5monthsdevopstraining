@@ -1,0 +1,18 @@
+# Terraform state, plans, provider cache, and local variables
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/tfplan
+**/terraform.tfvars
+*.backup
+
+# SSH keys and local environment files
+*.pem
+*.key
+.env
+
+# .NET build output
+**/bin/
+**/obj/
+**/build-check/
