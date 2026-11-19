@@ -1,6 +1,7 @@
 # EC2 in a PUBLIC subnet with docker, kubectl, helm and Jenkins. It builds the app image and deploys it.
 # The cluster API is private, so kubectl must run inside the VPC - this EC2 is the jump box for it.
 # Access is plain SSH: Terraform generates the key pair (saved to eks/terraform/deployer-key.pem).
+# Its public IP is static: an Elastic IP from eks/terraform-static, attached below.
 # Port 22 and Jenkins (8080) are open only to admin_cidrs (default: your current public IP);
 # 8080 is also open to GitHub's webhook IPs, so a push can trigger Jenkins.
 #   ssh -i eks/terraform/deployer-key.pem ec2-user@<deployer_public_ip>   (see output "ssh_command")
@@ -139,9 +140,28 @@ resource "aws_instance" "deployer" {
   depends_on = [aws_route_table_association.public]
 }
 
-# Fixed public IP: the Jenkins URL, the GitHub webhook and the SSH address survive stop/start
-resource "aws_eip" "deployer" {
-  instance = aws_instance.deployer.id
-  domain   = "vpc"
-  tags     = { Name = "${local.name_prefix}-eip-eks-deployer" }
+########## Static public IP ##########
+
+# The Elastic IP lives in eks/terraform-static (never destroyed), so the Jenkins URL, the GitHub
+# webhook and the SSH address stay the same across destroy/apply. Here we only attach it.
+data "aws_eip" "deployer" {
+  tags = { Name = "${local.name_prefix}-eip-eks-deployer" }
+}
+
+resource "aws_eip_association" "deployer" {
+  allocation_id = data.aws_eip.deployer.id
+  instance_id   = aws_instance.deployer.id
+}
+
+locals {
+  deployer_ip = data.aws_eip.deployer.public_ip
+}
+
+# The IP used to be created by this stack: forget it (don't delete it), eks/terraform-static owns it now
+removed {
+  from = aws_eip.deployer
+
+  lifecycle {
+    destroy = false
+  }
 }

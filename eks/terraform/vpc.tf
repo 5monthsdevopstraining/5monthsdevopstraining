@@ -44,7 +44,17 @@ resource "aws_subnet" "private" {
     "kubernetes.io/role/internal-elb" = "1" # internal ALBs (not used by the sample app)
   }
 }
+# Extra subnet only for RDS (db.t4g.micro + gp3 needs capacity in ap-south-1c)
+resource "aws_subnet" "rds_c" {
+  vpc_id            = aws_vpc.this.id
+  availability_zone = "ap-south-1c"
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, 12) # 10.20.192.0/20, no clash with existing subnets
 
+  tags = {
+    Name = "${local.name_prefix}-subnet-eks-rds-c"
+    Tier = "database"
+  }
+}
 ########## Routing ##########
 
 resource "aws_route_table" "public" {
@@ -94,5 +104,10 @@ resource "aws_route_table_association" "private" {
   count = 2
 
   subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "rds_c" {
+  subnet_id      = aws_subnet.rds_c.id
   route_table_id = aws_route_table.private.id
 }

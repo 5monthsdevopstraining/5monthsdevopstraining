@@ -4,14 +4,14 @@
 # The job runs eks/Jenkinsfile on every push to var.github_branch (GitHub webhook, or polling every 2 min).
 #   UI:      terraform output jenkins_url   (user admin, password: terraform output -raw jenkins_admin_password)
 #   Webhook: terraform output github_webhook_url
-
+# ss
 resource "random_password" "jenkins_admin" {
   length  = 20
   special = false
 }
 
 locals {
-  jenkins_url = "http://${aws_eip.deployer.public_ip}:8080/"
+  jenkins_url = "http://${local.deployer_ip}:8080/"
   jenkins_job = "eks-sample-app"
 
   # Settings for eks/scripts/deploy-app.sh (no secrets: the DB password is read from Secrets Manager)
@@ -45,7 +45,7 @@ resource "terraform_data" "deployer_setup" {
 
   connection {
     type        = "ssh"
-    host        = aws_eip.deployer.public_ip
+    host        = local.deployer_ip
     user        = "ec2-user"
     private_key = tls_private_key.deployer.private_key_openssh
     timeout     = "10m" # the instance may still be booting
@@ -82,6 +82,7 @@ resource "terraform_data" "deployer_setup" {
   }
 
   depends_on = [
+    aws_eip_association.deployer, # SSH goes to the static IP
     aws_vpc_security_group_ingress_rule.deployer_ssh,
     aws_route_table_association.public,
   ]

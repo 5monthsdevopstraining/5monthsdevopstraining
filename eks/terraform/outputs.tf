@@ -39,7 +39,7 @@ output "deployer_instance_id" {
 
 output "deployer_public_ip" {
   description = "SSH target for eks/scripts/ssh.sh and kubectl.sh (Elastic IP)"
-  value       = aws_eip.deployer.public_ip
+  value       = local.deployer_ip
 }
 
 output "deployer_key_file" {
@@ -47,7 +47,7 @@ output "deployer_key_file" {
 }
 
 output "ssh_command" {
-  value = "ssh -i ${abspath(local_sensitive_file.deployer_key.filename)} ec2-user@${aws_eip.deployer.public_ip}"
+  value = "ssh -i ${abspath(local_sensitive_file.deployer_key.filename)} ec2-user@${local.deployer_ip}"
 }
 
 output "image_tag" {

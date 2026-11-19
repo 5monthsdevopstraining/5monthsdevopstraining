@@ -24,7 +24,7 @@ locals {
 
   ssh_connection = {
     type        = "ssh"
-    host        = aws_eip.deployer.public_ip
+    host        = local.deployer_ip
     user        = "ec2-user"
     private_key = tls_private_key.deployer.private_key_openssh
   }
@@ -110,17 +110,20 @@ resource "terraform_data" "ingress_cleanup" {
 
     inline = [
       "sudo systemctl stop jenkins || true", # no new deploy while tearing down
-      "kubectl delete ingress sample-app -n sample-app --ignore-not-found --wait --timeout 5m || true",
+      "echo '==> Deleting the Ingress (the LB controller removes the ALB, up to a few minutes)'",
+      "kubectl delete ingress sample-app -n sample-app --ignore-not-found --wait --timeout 8m && echo 'ALB removed' || echo 'WARNING: Ingress not deleted - delete the sampleapp-eks load balancer by hand (DEPLOYMENT_STEPS.md, Troubleshooting)'",
       "helm uninstall aws-load-balancer-controller -n kube-system --wait --timeout 3m || true",
     ]
   }
 
   # Destroyed (and its provisioner run) while everything it needs still exists: Terraform destroys
-  # these only AFTER this resource. Without the deployer's egress rule it can't reach the EKS API,
-  # and without the LB controller's add-ons/role the ALB is never removed.
+  # these only AFTER this resource. Without the deployer's egress rule it can't reach the EKS API;
+  # without CoreDNS, the add-ons, NAT or its role, the LB controller can't call AWS to remove the ALB.
   depends_on = [
+    aws_eip_association.deployer, # SSH goes to the static IP
     aws_eks_node_group.this,
     aws_eks_addon.core,
+    aws_eks_addon.coredns, # the LB controller resolves the AWS API hostnames through it
     aws_eks_access_policy_association.deployer,
     aws_vpc_security_group_ingress_rule.api_from_deployer,
     aws_vpc_security_group_ingress_rule.deployer_ssh,

@@ -5,7 +5,7 @@
 
 resource "aws_db_subnet_group" "app" {
   name       = "${local.name_prefix}-dbsubnet-eks-app"
-  subnet_ids = aws_subnet.private[*].id # 2 AZs
+  subnet_ids = concat(aws_subnet.private[*].id, [aws_subnet.rds_c.id]) # 2 private AZs + ap-south-1c
 }
 
 resource "aws_security_group" "rds" {
@@ -47,6 +47,7 @@ resource "aws_db_instance" "app" {
   db_subnet_group_name   = aws_db_subnet_group.app.name
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
+  availability_zone      = "ap-south-1c" 
 
   backup_retention_period = 0    # training: no backups
   skip_final_snapshot     = true # training: destroy without a snapshot
