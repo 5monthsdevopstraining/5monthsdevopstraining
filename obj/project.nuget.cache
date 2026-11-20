@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "dgSpecHash": "4KtzUxfNFY4=",
+  "success": true,
+  "projectFilePath": "/home/icanio-10018/Devops_Hub/Applications/Sample-Application/dotnet/dotnet.csproj",
+  "expectedPackageFiles": [
+    "/home/icanio-10018/.nuget/packages/awssdk.core/4.0.102.14/awssdk.core.4.0.102.14.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/awssdk.s3/4.0.104.8/awssdk.s3.4.0.104.8.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/microsoft.aspnetcore.openapi/10.0.14/microsoft.aspnetcore.openapi.10.0.14.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/microsoft.extensions.apidescription.server/10.0.0/microsoft.extensions.apidescription.server.10.0.0.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/microsoft.openapi/2.12.2/microsoft.openapi.2.12.2.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/npgsql/10.0.3/npgsql.10.0.3.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/swashbuckle.aspnetcore/10.3.1/swashbuckle.aspnetcore.10.3.1.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/swashbuckle.aspnetcore.swagger/10.3.1/swashbuckle.aspnetcore.swagger.10.3.1.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/swashbuckle.aspnetcore.swaggergen/10.3.1/swashbuckle.aspnetcore.swaggergen.10.3.1.nupkg.sha512",
+    "/home/icanio-10018/.nuget/packages/swashbuckle.aspnetcore.swaggerui/10.3.1/swashbuckle.aspnetcore.swaggerui.10.3.1.nupkg.sha512"
+  ],
+  "logs": []
+}
