@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dotnet-app
+description: ASP.NET Core (.NET 10) application on EKS behind an internet-facing ALB
+type: application
+version: 0.1.0       # chart version - bump when templates change
+appVersion: "v1"     # informational; the deployed image tag comes from values

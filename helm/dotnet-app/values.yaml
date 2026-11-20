@@ -1,0 +1,40 @@
+replicaCount: 2
+
+image:
+  repository: srinithi25/devops-week11-task
+  tag: "v1"                 # Jenkins overrides this with the build number
+  pullPolicy: IfNotPresent
+
+containerPort: 8080          # matches ASPNETCORE_URLS / EXPOSE in the Dockerfile
+
+service:
+  type: ClusterIP            # internal only; the ALB reaches pods directly
+  port: 80
+
+healthCheck:
+  path: /health              # used by readiness, liveness AND the ALB health check
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+rollingUpdate:
+  maxSurge: 1                # start 1 new pod before removing an old one
+  maxUnavailable: 0          # never drop below the desired replica count
+
+env:
+  - name: ASPNETCORE_ENVIRONMENT
+    value: Production
+  - name: AWS__Region
+    value: ap-southeast-2
+
+ingress:
+  enabled: true
+  className: alb
+  loadBalancerName: alb-dev-week-10-region-1-01
+  scheme: internet-facing
+  tags: "Environment=dev,Project=week-10,ManagedBy=aws-load-balancer-controller"

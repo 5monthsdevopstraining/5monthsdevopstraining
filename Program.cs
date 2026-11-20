@@ -6,6 +6,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddHealthChecks();
 
 var region = builder.Configuration["AWS:Region"] ?? "ap-southeast-2";
 builder.Services.AddSingleton<IAmazonS3>(_ => new AmazonS3Client(
@@ -15,6 +16,7 @@ var app = builder.Build();
 
 app.UseSwagger();
 app.UseSwaggerUI();
+app.MapHealthChecks("/health");
 app.MapControllers();
 
 app.Run();
