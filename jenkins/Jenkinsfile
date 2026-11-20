@@ -20,13 +20,6 @@ pipeline {
         timeout(time: 40, unit: 'MINUTES')
     }
 
-    parameters {
-        booleanParam(name: 'INSTALL_LB_CONTROLLER', defaultValue: true,
-                     description: 'Install/upgrade the AWS Load Balancer Controller (safe to repeat)')
-        string(name: 'LB_CONTROLLER_CHART_VERSION', defaultValue: '1.8.2',
-               description: 'Helm chart of the AWS Load Balancer Controller (1.8.2 = controller v2.8.2, matches the IAM policy in terraform/policies)')
-    }
-
     environment {
         KUBECONFIG        = "${WORKSPACE}/.kubeconfig"
         APP_PROJECT       = 'dotnet/dotnet.csproj'
@@ -144,7 +137,7 @@ pipeline {
             }
         }
 
-        // ---- Cluster access (+ one-time add-on: AWS Load Balancer Controller)
+        // ---- Cluster access
         stage('Cluster Setup') {
             steps {
                 sh '''
@@ -152,24 +145,6 @@ pipeline {
                     aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
                     kubectl get nodes
                 '''
-                script {
-                    if (params.INSTALL_LB_CONTROLLER) {
-                        sh '''
-                            set -eu
-                            helm repo add eks https://aws.github.io/eks-charts
-                            helm repo update
-                            helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-                              --namespace kube-system \
-                              --version "$LB_CONTROLLER_CHART_VERSION" \
-                              --set clusterName="$EKS_CLUSTER_NAME" \
-                              --set region="$AWS_REGION" \
-                              --set vpcId="$VPC_ID" \
-                              --set serviceAccount.create=true \
-                              --set serviceAccount.name=aws-load-balancer-controller \
-                              --wait --timeout 5m
-                        '''
-                    }
-                }
             }
         }
 
@@ -220,7 +195,9 @@ pipeline {
                     envsubst "$VARS" < kubernetes/configmap.yaml  | kubectl apply -f -
                     envsubst "$VARS" < kubernetes/deployment.yaml | kubectl apply -f -
                     kubectl apply -f kubernetes/service.yaml
-                    kubectl apply -f kubernetes/ingress.yaml
+
+                    # Ensure the bastion port-forward service is refreshed
+                    sudo systemctl restart dotnet-api-port-forward || true
                 '''
             }
         }
@@ -232,7 +209,7 @@ pipeline {
             }
         }
 
-        // ---- 10. Verify pods and service
+        // ---- 10. Verify pods, service, and Nginx reverse proxy
         stage('Verify') {
             steps {
                 sh '''
@@ -254,10 +231,14 @@ pipeline {
                       --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
                     [ "$NOT_READY" = "0" ] || { echo "One or more pods are not Running"; exit 1; }
 
-                    echo "Load balancer address (may take a few minutes to appear on the first deploy):"
-                    kubectl -n "$K8S_NAMESPACE_APP" get ingress "$DEPLOYMENT_NAME" \
-                      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true
-                    echo
+                    echo "Verifying local API connectivity through Nginx on the bastion..."
+                    sleep 3
+                    curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost/swagger/v1/swagger.json || {
+                      echo "API check via Nginx on bastion failed. Checking dotnet-api-port-forward status:"
+                      sudo systemctl status dotnet-api-port-forward || true
+                      exit 1
+                    }
+                    echo "API successfully reached through Nginx reverse proxy (port 80 -> port-forward 5000 -> EKS dotnet-api)!"
                 '''
             }
         }
