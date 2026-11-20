@@ -1,0 +1,41 @@
+name: build-and-deploy
+on:
+  push:
+    branches: [gautham-icanio]
+    paths:
+      - 'sample-app/**'
+      - '.github/workflows/deploy.yml'
+permissions:
+  contents: read
+concurrency:
+  group: eks-deploy
+  cancel-in-progress: false
+env:
+  AWS_PROFILE: terraform-dev
+  AWS_REGION: ap-southeast-2
+  ECR_REGISTRY: 648879824211.dkr.ecr.ap-southeast-2.amazonaws.com
+  ECR_REPO: 648879824211.dkr.ecr.ap-southeast-2.amazonaws.com/sample-app
+  ADMIN_HOST: i-0e9d790f7384f3212
+jobs:
+  deploy:
+    runs-on: [self-hosted, gautham-eks-deploy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to ECR
+        run: aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+      - name: Build and push image
+        run: |
+          TAG=${GITHUB_SHA::7}
+          docker build -t $ECR_REPO:$TAG ./sample-app
+          docker push $ECR_REPO:$TAG
+      - name: Trigger Jenkins deploy
+        run: |
+          TAG=${GITHUB_SHA::7}
+          CMD_ID=$(aws ssm send-command --instance-ids $ADMIN_HOST \
+            --document-name AWS-RunShellScript \
+            --parameters "commands=[\"/usr/local/bin/trigger-jenkins.sh $TAG\"]" \
+            --query Command.CommandId --output text)
+          aws ssm wait command-executed --command-id $CMD_ID --instance-id $ADMIN_HOST || FAILED=1
+          aws ssm get-command-invocation --command-id $CMD_ID --instance-id $ADMIN_HOST \
+            --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
+          [ -z "${FAILED:-}" ]
