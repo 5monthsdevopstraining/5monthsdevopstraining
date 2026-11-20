@@ -3,83 +3,133 @@ pipeline {
     agent any
 
     options {
-        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
         disableConcurrentBuilds()
-        timeout(time: 40, unit: 'MINUTES')
     }
 
     environment {
-        KUBECONFIG        = "${WORKSPACE}/.kubeconfig"
-        APP_PROJECT       = 'dotnet/dotnet.csproj'
-        SDK_IMAGE         = 'mcr.microsoft.com/dotnet/sdk:10.0'
-        K8S_NAMESPACE_APP = 'sample-app'
-        DEPLOYMENT_NAME   = 'dotnet-api'
-        CONNECTION_SECRET = 'dotnet-api-connection'
+        AWS_REGION          = 'ap-southeast-2'
+        AWS_DEFAULT_REGION  = 'ap-southeast-2'
+
+        EKS_CLUSTER_NAME    = 'dotnet8-eks-dev-eks'
+        K8S_NAMESPACE       = 'sample-app'
+
+        ECR_REPOSITORY_URL  = '832474135505.dkr.ecr.ap-southeast-2.amazonaws.com/dotnet8-eks-dev-dotnet-api'
+
+        APP_PROJECT         = 'dotnet/dotnet.csproj'
+        DOCKERFILE          = 'docker/Dockerfile'
+        SDK_IMAGE           = 'mcr.microsoft.com/dotnet/sdk:10.0'
+
+        S3_BUCKET_NAME      = 'dotnet8-eks-dev-docs-832474135505'
+
+        DB_HOST             = 'dotnet8-eks-dev-postgres.c74gk4480h4a.ap-southeast-2.rds.amazonaws.com'
+        DB_PORT             = '5432'
+        DB_NAME             = 'documentsdb'
+
+        DB_SECRET_ID        = 'arn:aws:secretsmanager:ap-southeast-2:832474135505:secret:rds!db-f3da0dfa-55bb-42ee-bf3b-b82497e41753-QYkRK7'
+
+        K8S_DEPLOYMENT      = 'dotnet-api'
+        K8S_CONTAINER       = 'dotnet-api'
+        K8S_SERVICE         = 'dotnet-api'
+        K8S_SECRET          = 'dotnet-api-connection'
+        K8S_CONFIGMAP       = 'dotnet-api-config'
     }
 
     stages {
 
-        // 1. Checkout and validate configuration
         stage('Checkout') {
             steps {
+                checkout scm
+
                 script {
-                    def scmVars = checkout scm
-                    env.GIT_SHA = scmVars.GIT_COMMIT.take(7)
+                    env.GIT_SHA = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+
                     env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHA}"
+                    env.IMAGE_URI = "${env.ECR_REPOSITORY_URL}:${env.IMAGE_TAG}"
                 }
+
+                echo "Git commit: ${env.GIT_SHA}"
+                echo "Docker image: ${env.IMAGE_URI}"
 
                 sh '''
                     set -eu
 
-                    for v in AWS_REGION EKS_CLUSTER_NAME ECR_REPOSITORY_URL S3_BUCKET_NAME DB_HOST DB_PORT DB_NAME DB_SECRET_ID VPC_ID; do
-                        if [ -z "$(printenv "$v" || true)" ]; then
-                            echo "Missing platform setting: $v"
-                            exit 1
-                        fi
-                    done
+                    echo "Checking application files..."
 
                     test -f "$APP_PROJECT"
+                    test -f "$DOCKERFILE"
 
-                    echo "Application project: $APP_PROJECT"
-                    echo "Image tag: $IMAGE_TAG"
+                    echo "Project and Dockerfile found."
                 '''
-
-                echo "Image tag: ${env.IMAGE_TAG}"
             }
         }
 
-        // 2. Restore .NET dependencies
+        stage('Docker Access Check') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "===== PIPELINE IDENTITY ====="
+                    id
+                    groups
+
+                    echo "===== PIPELINE HOST ====="
+                    hostname
+                    hostname -I 2>/dev/null || true
+
+                    echo "===== DOCKER SOCKET ====="
+                    ls -l /var/run/docker.sock
+                    stat -c 'Owner=%U Group=%G Permissions=%a' /var/run/docker.sock
+
+                    echo "===== DOCKER CONNECTION ====="
+                    docker version
+                    docker info --format 'Docker server version: {{.ServerVersion}}'
+
+                    echo "Docker access successful."
+                '''
+            }
+        }
+
+        stage('AWS Access Check') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "Checking AWS IAM role..."
+
+                    aws sts get-caller-identity
+
+                    echo "Checking ECR repository..."
+
+                    aws ecr describe-repositories \
+                        --repository-names dotnet8-eks-dev-dotnet-api \
+                        --region "$AWS_REGION" \
+                        --query 'repositories[0].repositoryUri' \
+                        --output text
+
+                    echo "AWS access successful."
+                '''
+            }
+        }
+
         stage('Restore') {
             steps {
                 sh '''
                     set -eu
 
-                    echo "===== PIPELINE USER ====="
-                    id
-                    groups
+                    mkdir -p "$WORKSPACE/.nuget"
 
-                    echo "===== DOCKER SOCKET ====="
-                    ls -ln /var/run/docker.sock
-                    stat -c 'Socket owner=%U group=%G permissions=%a' /var/run/docker.sock
-
-                    echo "===== DOCKER ENVIRONMENT ====="
-                    echo "DOCKER_HOST=${DOCKER_HOST:-not-set}"
-                    echo "DOCKER_CONFIG=${DOCKER_CONFIG:-not-set}"
-
-                    echo "===== DOCKER CONNECTION TEST ====="
-                    docker info --format 'Docker version: {{.ServerVersion}}'
-
-                    echo "===== DOCKER IMAGE PULL ====="
                     docker pull "$SDK_IMAGE"
 
                     docker run --rm \
-                        -u "$(id -u):$(id -g)" \
+                        --user "$(id -u):$(id -g)" \
                         -e HOME=/tmp \
-                        -e DOTNET_CLI_HOME=/tmp/dotnet-home \
-                        -e NUGET_PACKAGES=/tmp/nuget \
-                        -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-                        -e DOTNET_NOLOGO=1 \
+                        -e NUGET_PACKAGES=/tmp/.nuget/packages \
                         -v "$WORKSPACE:/src" \
+                        -v "$WORKSPACE/.nuget:/tmp/.nuget" \
                         -w /src \
                         "$SDK_IMAGE" \
                         dotnet restore "$APP_PROJECT"
@@ -87,241 +137,350 @@ pipeline {
             }
         }
 
-        // 3. Build .NET application
         stage('Build') {
             steps {
                 sh '''
                     set -eu
 
                     docker run --rm \
-                        -u "$(id -u):$(id -g)" \
+                        --user "$(id -u):$(id -g)" \
                         -e HOME=/tmp \
-                        -e DOTNET_CLI_HOME=/tmp/dotnet-home \
-                        -e NUGET_PACKAGES=/tmp/nuget \
-                        -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-                        -e DOTNET_NOLOGO=1 \
+                        -e NUGET_PACKAGES=/tmp/.nuget/packages \
                         -v "$WORKSPACE:/src" \
+                        -v "$WORKSPACE/.nuget:/tmp/.nuget" \
                         -w /src \
                         "$SDK_IMAGE" \
-                        dotnet build "$APP_PROJECT" -c Release --no-restore
+                        dotnet build "$APP_PROJECT" \
+                        --configuration Release \
+                        --no-restore
                 '''
             }
         }
 
-        // 4. Test
         stage('Test') {
             steps {
-                sh '''
-                    set -eu
+                script {
+                    def testProject = sh(
+                        script: "find . -type f \\( -name '*Tests.csproj' -o -name '*.Test.csproj' \\) -print -quit",
+                        returnStdout: true
+                    ).trim()
 
-                    echo "No test project exists for dotnet/dotnet.csproj."
-                    echo "Skipping automated tests."
+                    if (testProject) {
+                        sh """
+                            set -eu
 
-                    if [ -d tests ] && find tests -name '*.csproj' -print -quit | grep -q .; then
-                        echo "Unexpected test project found under tests/."
-                        find tests -name '*.csproj'
-                        exit 1
-                    fi
-                '''
+                            docker run --rm \\
+                                --user "\$(id -u):\$(id -g)" \\
+                                -e HOME=/tmp \\
+                                -e NUGET_PACKAGES=/tmp/.nuget/packages \\
+                                -v "\$WORKSPACE:/src" \\
+                                -v "\$WORKSPACE/.nuget:/tmp/.nuget" \\
+                                -w /src \\
+                                "$SDK_IMAGE" \\
+                                dotnet test "$testProject" \\
+                                --configuration Release \\
+                                --no-restore
+                        """
+                    } else {
+                        echo 'No test project found. Skipping tests.'
+                    }
+                }
             }
         }
 
-        // 5. Build Docker image
         stage('Docker Build') {
             steps {
                 sh '''
                     set -eu
 
+                    echo "Building Docker image..."
+
                     docker build \
-                        -f docker/Dockerfile \
-                        -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+                        --file "$DOCKERFILE" \
+                        --tag "$IMAGE_URI" \
+                        .
+
+                    docker images "$IMAGE_URI"
                 '''
             }
         }
 
-        // 6. Login and push image to ECR
         stage('Push to ECR') {
             steps {
                 sh '''
                     set -eu
 
-                    REGISTRY="${ECR_REPOSITORY_URL%%/*}"
+                    echo "Logging in to Amazon ECR..."
 
-                    aws ecr get-login-password --region "$AWS_REGION" \
-                        | docker login --username AWS --password-stdin "$REGISTRY"
+                    aws ecr get-login-password \
+                        --region "$AWS_REGION" \
+                    | docker login \
+                        --username AWS \
+                        --password-stdin "$ECR_REPOSITORY_URL"
 
-                    docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+                    echo "Pushing image..."
+
+                    docker push "$IMAGE_URI"
+
+                    echo "Image pushed successfully."
                 '''
             }
         }
 
-        // 7. Configure EKS access
         stage('Cluster Setup') {
             steps {
                 sh '''
                     set -eu
 
+                    export KUBECONFIG="$WORKSPACE/.kube/config"
+
+                    mkdir -p "$WORKSPACE/.kube"
+                    chmod 700 "$WORKSPACE/.kube"
+
+                    echo "Connecting to EKS..."
+
                     aws eks update-kubeconfig \
-                        --name "$EKS_CLUSTER_NAME" \
                         --region "$AWS_REGION" \
+                        --name "$EKS_CLUSTER_NAME" \
                         --kubeconfig "$KUBECONFIG"
 
+                    echo "Checking EKS nodes..."
+
                     kubectl get nodes
+
+                    kubectl get namespace "$K8S_NAMESPACE"
                 '''
             }
         }
 
-        // 8. Deploy application to Kubernetes
         stage('Deploy') {
             steps {
                 sh '''
                     set -eu
 
-                    export IMAGE_URI="$ECR_REPOSITORY_URL:$IMAGE_TAG"
-                    VARS='${IMAGE_URI} ${AWS_REGION} ${S3_BUCKET_NAME}'
+                    export KUBECONFIG="$WORKSPACE/.kube/config"
 
-                    kubectl apply -f kubernetes/namespace.yaml
-                    kubectl apply -f kubernetes/service-account.yaml
+                    echo "Retrieving database credentials..."
 
-                    # Retrieve database credentials without printing them.
                     SECRET_JSON=$(aws secretsmanager get-secret-value \
                         --secret-id "$DB_SECRET_ID" \
                         --region "$AWS_REGION" \
                         --query SecretString \
                         --output text)
 
-                    printf '%s' "$SECRET_JSON" | jq -e \
-                        'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
-                        >/dev/null
+                    DB_USERNAME=$(printf '%s' "$SECRET_JSON" | jq -er '.username // .Username')
+                    DB_PASSWORD=$(printf '%s' "$SECRET_JSON" | jq -er '.password // .Password')
 
-                    jq -n \
-                        --arg ns "$K8S_NAMESPACE_APP" \
-                        --arg name "$CONNECTION_SECRET" \
-                        --arg host "$DB_HOST" \
-                        --arg port "$DB_PORT" \
-                        --arg db "$DB_NAME" \
-                        --argjson secret "$SECRET_JSON" \
-                        '{
-                            apiVersion: "v1",
-                            kind: "Secret",
-                            metadata: {
-                                name: $name,
-                                namespace: $ns,
-                                labels: {"app.kubernetes.io/name": "dotnet-api"}
-                            },
-                            type: "Opaque",
-                            stringData: {
-                                "ConnectionStrings__Rds": "Host=\\($host);Port=\\($port);Database=\\($db);Username=\\($secret.username);Password=\\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
-                            }
-                        }' | kubectl apply -f -
+                    CONNECTION_STRING="Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USERNAME};Password=${DB_PASSWORD};SSL Mode=Require;Trust Server Certificate=true"
 
-                    unset SECRET_JSON
+                    unset SECRET_JSON DB_USERNAME DB_PASSWORD
 
-                    envsubst "$VARS" < kubernetes/configmap.yaml | kubectl apply -f -
-                    envsubst "$VARS" < kubernetes/deployment.yaml | kubectl apply -f -
+                    echo "Creating Kubernetes database secret..."
 
-                    kubectl apply -f kubernetes/service.yaml
+                    SECRET_FILE="$WORKSPACE/.rds-connection-string"
 
-                    sudo systemctl restart dotnet-api-port-forward || true
+                    umask 077
+                    printf '%s' "$CONNECTION_STRING" > "$SECRET_FILE"
+                    unset CONNECTION_STRING
+
+                    kubectl create secret generic "$K8S_SECRET" \
+                        --namespace "$K8S_NAMESPACE" \
+                        --from-file=ConnectionStrings__Rds="$SECRET_FILE" \
+                        --dry-run=client \
+                        -o yaml \
+                    | kubectl apply -f -
+
+                    rm -f "$SECRET_FILE"
+
+                    echo "Creating application ConfigMap..."
+
+                    kubectl create configmap "$K8S_CONFIGMAP" \
+                        --namespace "$K8S_NAMESPACE" \
+                        --from-literal=ASPNETCORE_ENVIRONMENT=Production \
+                        --from-literal=ASPNETCORE_URLS=http://+:8080 \
+                        --from-literal=AWS_REGION="$AWS_REGION" \
+                        --from-literal=S3_BUCKET_NAME="$S3_BUCKET_NAME" \
+                        --dry-run=client \
+                        -o yaml \
+                    | kubectl apply -f -
+
+                    echo "Applying Kubernetes Deployment and Service..."
+
+                    cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${K8S_DEPLOYMENT}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dotnet-api
+  template:
+    metadata:
+      labels:
+        app: dotnet-api
+    spec:
+      containers:
+        - name: ${K8S_CONTAINER}
+          image: ${IMAGE_URI}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ${K8S_CONFIGMAP}
+          env:
+            - name: ConnectionStrings__Rds
+              valueFrom:
+                secretKeyRef:
+                  name: ${K8S_SECRET}
+                  key: ConnectionStrings__Rds
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${K8S_SERVICE}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: dotnet-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+EOF
+
+                    echo "Deployment resources applied."
                 '''
             }
         }
 
-        // 9. Wait for deployment rollout
         stage('Wait for Rollout') {
             steps {
                 sh '''
-                    kubectl -n "$K8S_NAMESPACE_APP" \
-                        rollout status deployment/"$DEPLOYMENT_NAME" \
-                        --timeout=300s
+                    set -eu
+
+                    export KUBECONFIG="$WORKSPACE/.kube/config"
+
+                    echo "Waiting for application deployment..."
+
+                    kubectl rollout status \
+                        deployment/"$K8S_DEPLOYMENT" \
+                        --namespace "$K8S_NAMESPACE" \
+                        --timeout=180s
+
+                    echo "Deployment rollout successful."
                 '''
             }
         }
 
-        // 10. Verify deployment and application
         stage('Verify') {
             steps {
                 sh '''
                     set -eu
 
-                    kubectl -n "$K8S_NAMESPACE_APP" get pods -o wide
-                    kubectl -n "$K8S_NAMESPACE_APP" get svc "$DEPLOYMENT_NAME"
-                    kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME"
-                    kubectl -n "$K8S_NAMESPACE_APP" get secret "$CONNECTION_SECRET" >/dev/null
+                    export KUBECONFIG="$WORKSPACE/.kube/config"
 
-                    DESIRED=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" \
-                        -o jsonpath='{.spec.replicas}')
+                    echo "===== DEPLOYMENT ====="
+                    kubectl get deployment \
+                        --namespace "$K8S_NAMESPACE"
 
-                    READY=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" \
-                        -o jsonpath='{.status.readyReplicas}')
+                    echo "===== PODS ====="
+                    kubectl get pods \
+                        --namespace "$K8S_NAMESPACE" \
+                        -o wide
 
-                    echo "Ready replicas: ${READY:-0}/$DESIRED"
+                    echo "===== SERVICE ====="
+                    kubectl get service \
+                        --namespace "$K8S_NAMESPACE"
 
-                    [ "${READY:-0}" = "$DESIRED" ]
+                    echo "===== ENDPOINTS ====="
+                    kubectl get endpoints \
+                        --namespace "$K8S_NAMESPACE" \
+                        "$K8S_SERVICE"
 
-                    ENDPOINTS=$(kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME" \
-                        -o jsonpath='{.subsets[*].addresses[*].ip}')
+                    echo "===== PORT FORWARD ====="
 
-                    [ -n "$ENDPOINTS" ] || {
-                        echo "Service has no endpoints"
-                        exit 1
-                    }
+                    sudo -n systemctl restart dotnet-api-port-forward
 
-                    NOT_READY=$(kubectl -n "$K8S_NAMESPACE_APP" get pods \
-                        -l app.kubernetes.io/name="$DEPLOYMENT_NAME" \
-                        --field-selector=status.phase!=Running \
-                        --no-headers 2>/dev/null | wc -l)
+                    sudo -n systemctl status \
+                        dotnet-api-port-forward \
+                        --no-pager
 
-                    [ "$NOT_READY" = "0" ] || {
-                        echo "One or more pods are not Running"
-                        exit 1
-                    }
+                    echo "===== APPLICATION HTTP CHECK ====="
 
-                    echo "Checking API through Nginx..."
+                    for attempt in $(seq 1 30); do
+                        if curl -fsS \
+                            http://127.0.0.1:5000/swagger/v1/swagger.json \
+                            -o /dev/null; then
 
-                    sleep 3
+                            echo "Application HTTP check successful."
+                            exit 0
+                        fi
 
-                    curl -fsS -o /dev/null \
-                        -w "%{http_code}\\n" \
-                        http://localhost/swagger/v1/swagger.json || {
-                            echo "API check through Nginx failed."
-                            sudo systemctl status dotnet-api-port-forward || true
-                            exit 1
-                        }
+                        echo "Application not ready yet. Attempt: $attempt/30"
+                        sleep 5
+                    done
 
-                    echo "API successfully reached through Nginx!"
+                    echo "Application HTTP check failed."
+                    exit 1
                 '''
             }
         }
     }
 
     post {
+        success {
+            echo 'SUCCESS: .NET application deployed to Amazon EKS.'
+            echo "Docker image: ${env.IMAGE_URI}"
+        }
 
         failure {
-            sh '''
-                set -eu
-
-                if [ -f "$KUBECONFIG" ]; then
-                    echo "Attempting deployment rollback..."
-
-                    kubectl -n "$K8S_NAMESPACE_APP" \
-                        rollout undo deployment/"$DEPLOYMENT_NAME" || true
-
-                    kubectl -n "$K8S_NAMESPACE_APP" \
-                        rollout status deployment/"$DEPLOYMENT_NAME" \
-                        --timeout=180s || true
-                else
-                    echo "No kubeconfig available. Skipping rollback."
-                fi
-            '''
+            echo 'FAILED: Check the first failed pipeline stage and its console output.'
         }
 
         always {
             sh '''
-                docker rmi "$ECR_REPOSITORY_URL:$IMAGE_TAG" || true
-                docker image prune -f || true
-                docker logout "${ECR_REPOSITORY_URL%%/*}" || true
-                rm -f "$KUBECONFIG"
+                echo "Starting pipeline cleanup..."
+
+                rm -f "$WORKSPACE/.rds-connection-string"
+
+                if [ -n "${WORKSPACE:-}" ]; then
+                    rm -rf "$WORKSPACE/.kube"
+                fi
+
+                if command -v docker >/dev/null 2>&1; then
+                    if [ -n "${IMAGE_URI:-}" ]; then
+                        docker image rm "$IMAGE_URI" 2>/dev/null || true
+                    fi
+
+                    docker logout "$ECR_REPOSITORY_URL" 2>/dev/null || true
+                fi
+
+                echo "Cleanup completed."
             '''
         }
     }
