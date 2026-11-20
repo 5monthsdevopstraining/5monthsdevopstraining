@@ -1,15 +1,3 @@
-// Declarative pipeline for the original .NET 10 application -> ECR -> EKS.
-//
-// Application project: dotnet/dotnet.csproj
-// There is no test project for this application. The Test stage reports that
-// and does not run the removed sample tests.
-//
-// Security: there are NO AWS access keys here. The Jenkins EC2 instance has an
-// IAM role; the AWS CLI picks its temporary credentials up automatically.
-// Restore and build run inside the .NET 10 SDK container, so the Jenkins host
-// does not need a .NET SDK installed.
-// The non-secret platform settings (AWS_REGION, EKS_CLUSTER_NAME, ECR_REPOSITORY_URL,
-// S3_BUCKET_NAME, DB_HOST, ...) are set on the Jenkins service by Terraform.
 
 pipeline {
     agent any
@@ -31,234 +19,303 @@ pipeline {
 
     stages {
 
-        // ---- 1. Checkout from GitHub
+        // 1. Checkout and validate configuration
         stage('Checkout') {
             steps {
                 script {
                     def scmVars = checkout scm
-                    env.GIT_SHA   = scmVars.GIT_COMMIT.take(7)
+                    env.GIT_SHA = scmVars.GIT_COMMIT.take(7)
                     env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHA}"
                 }
+
                 sh '''
                     set -eu
+
                     for v in AWS_REGION EKS_CLUSTER_NAME ECR_REPOSITORY_URL S3_BUCKET_NAME DB_HOST DB_PORT DB_NAME DB_SECRET_ID VPC_ID; do
-                      if [ -z "$(printenv "$v" || true)" ]; then
-                        echo "Missing platform setting: $v (Terraform sets it on the Jenkins service)"; exit 1
-                      fi
+                        if [ -z "$(printenv "$v" || true)" ]; then
+                            echo "Missing platform setting: $v"
+                            exit 1
+                        fi
                     done
+
                     test -f "$APP_PROJECT"
+
                     echo "Application project: $APP_PROJECT"
-                    echo "Image tag will be: ${IMAGE_TAG:-unset}"
+                    echo "Image tag: $IMAGE_TAG"
                 '''
+
                 echo "Image tag: ${env.IMAGE_TAG}"
             }
         }
 
-        // ---- 2. Restore .NET dependencies inside the SDK image
+        // 2. Restore .NET dependencies
         stage('Restore') {
             steps {
                 sh '''
                     set -eu
+
+                    echo "===== PIPELINE USER ====="
+                    id
+                    groups
+
+                    echo "===== DOCKER SOCKET ====="
+                    ls -ln /var/run/docker.sock
+                    stat -c 'Socket owner=%U group=%G permissions=%a' /var/run/docker.sock
+
+                    echo "===== DOCKER ENVIRONMENT ====="
+                    echo "DOCKER_HOST=${DOCKER_HOST:-not-set}"
+                    echo "DOCKER_CONFIG=${DOCKER_CONFIG:-not-set}"
+
+                    echo "===== DOCKER CONNECTION TEST ====="
+                    docker info --format 'Docker version: {{.ServerVersion}}'
+
+                    echo "===== DOCKER IMAGE PULL ====="
                     docker pull "$SDK_IMAGE"
+
                     docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -e DOTNET_CLI_HOME=/tmp/dotnet-home \
-                      -e NUGET_PACKAGES=/tmp/nuget \
-                      -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-                      -e DOTNET_NOLOGO=1 \
-                      -v "$WORKSPACE:/src" \
-                      -w /src \
-                      "$SDK_IMAGE" \
-                      dotnet restore "$APP_PROJECT"
+                        -u "$(id -u):$(id -g)" \
+                        -e HOME=/tmp \
+                        -e DOTNET_CLI_HOME=/tmp/dotnet-home \
+                        -e NUGET_PACKAGES=/tmp/nuget \
+                        -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+                        -e DOTNET_NOLOGO=1 \
+                        -v "$WORKSPACE:/src" \
+                        -w /src \
+                        "$SDK_IMAGE" \
+                        dotnet restore "$APP_PROJECT"
                 '''
             }
         }
 
-        // ---- 3. Build the original application
+        // 3. Build .NET application
         stage('Build') {
             steps {
                 sh '''
                     set -eu
+
                     docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -e DOTNET_CLI_HOME=/tmp/dotnet-home \
-                      -e NUGET_PACKAGES=/tmp/nuget \
-                      -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-                      -e DOTNET_NOLOGO=1 \
-                      -v "$WORKSPACE:/src" \
-                      -w /src \
-                      "$SDK_IMAGE" \
-                      dotnet build "$APP_PROJECT" -c Release --no-restore
+                        -u "$(id -u):$(id -g)" \
+                        -e HOME=/tmp \
+                        -e DOTNET_CLI_HOME=/tmp/dotnet-home \
+                        -e NUGET_PACKAGES=/tmp/nuget \
+                        -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+                        -e DOTNET_NOLOGO=1 \
+                        -v "$WORKSPACE:/src" \
+                        -w /src \
+                        "$SDK_IMAGE" \
+                        dotnet build "$APP_PROJECT" -c Release --no-restore
                 '''
             }
         }
 
-        // ---- 4. Test
-        // The original application has no test project. Do not run tests that
-        // belonged to the removed sample API.
+        // 4. Test
         stage('Test') {
             steps {
                 sh '''
                     set -eu
+
                     echo "No test project exists for dotnet/dotnet.csproj."
-                    echo "The sample tests that targeted src/DotNet8Api were removed and are not executed."
-                    echo "Skipping automated tests. Docker build, push, and deploy continue."
+                    echo "Skipping automated tests."
+
                     if [ -d tests ] && find tests -name '*.csproj' -print -quit | grep -q .; then
-                      echo "Unexpected test project found under tests/. Refusing to guess which one to run."
-                      find tests -name '*.csproj'
-                      exit 1
+                        echo "Unexpected test project found under tests/."
+                        find tests -name '*.csproj'
+                        exit 1
                     fi
                 '''
             }
         }
 
-        // ---- 5. Docker build (SDK stage inside docker/Dockerfile)
+        // 5. Build Docker image
         stage('Docker Build') {
             steps {
                 sh '''
                     set -eu
-                    docker build -f docker/Dockerfile -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+
+                    docker build \
+                        -f docker/Dockerfile \
+                        -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
                 '''
             }
         }
 
-        // ---- 6 + 7. Log in to ECR (IAM role) and push
+        // 6. Login and push image to ECR
         stage('Push to ECR') {
             steps {
                 sh '''
                     set -eu
+
                     REGISTRY="${ECR_REPOSITORY_URL%%/*}"
+
                     aws ecr get-login-password --region "$AWS_REGION" \
-                      | docker login --username AWS --password-stdin "$REGISTRY"
+                        | docker login --username AWS --password-stdin "$REGISTRY"
+
                     docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
                 '''
             }
         }
 
-        // ---- Cluster access
+        // 7. Configure EKS access
         stage('Cluster Setup') {
             steps {
                 sh '''
                     set -eu
-                    aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
+
+                    aws eks update-kubeconfig \
+                        --name "$EKS_CLUSTER_NAME" \
+                        --region "$AWS_REGION" \
+                        --kubeconfig "$KUBECONFIG"
+
                     kubectl get nodes
                 '''
             }
         }
 
-        // ---- 8. Update the Kubernetes deployment
+        // 8. Deploy application to Kubernetes
         stage('Deploy') {
             steps {
                 sh '''
                     set -eu
+
                     export IMAGE_URI="$ECR_REPOSITORY_URL:$IMAGE_TAG"
                     VARS='${IMAGE_URI} ${AWS_REGION} ${S3_BUCKET_NAME}'
 
                     kubectl apply -f kubernetes/namespace.yaml
                     kubectl apply -f kubernetes/service-account.yaml
 
-                    # The application reads ConnectionStrings:Rds. It does not call
-                    # Secrets Manager itself. Copy the RDS-managed username and
-                    # password into a Kubernetes Secret. Do not print the secret.
+                    # Retrieve database credentials without printing them.
                     SECRET_JSON=$(aws secretsmanager get-secret-value \
-                      --secret-id "$DB_SECRET_ID" \
-                      --region "$AWS_REGION" \
-                      --query SecretString \
-                      --output text)
+                        --secret-id "$DB_SECRET_ID" \
+                        --region "$AWS_REGION" \
+                        --query SecretString \
+                        --output text)
+
                     printf '%s' "$SECRET_JSON" | jq -e \
-                      'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
-                      >/dev/null
+                        'has("username") and has("password") and (.username | length > 0) and (.password | length > 0)' \
+                        >/dev/null
+
                     jq -n \
-                      --arg ns "$K8S_NAMESPACE_APP" \
-                      --arg name "$CONNECTION_SECRET" \
-                      --arg host "$DB_HOST" \
-                      --arg port "$DB_PORT" \
-                      --arg db "$DB_NAME" \
-                      --argjson secret "$SECRET_JSON" \
-                      '{
-                        apiVersion: "v1",
-                        kind: "Secret",
-                        metadata: {
-                          name: $name,
-                          namespace: $ns,
-                          labels: {"app.kubernetes.io/name": "dotnet-api"}
-                        },
-                        type: "Opaque",
-                        stringData: {
-                          "ConnectionStrings__Rds": "Host=\\($host);Port=\\($port);Database=\\($db);Username=\\($secret.username);Password=\\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
-                        }
-                      }' | kubectl apply -f -
+                        --arg ns "$K8S_NAMESPACE_APP" \
+                        --arg name "$CONNECTION_SECRET" \
+                        --arg host "$DB_HOST" \
+                        --arg port "$DB_PORT" \
+                        --arg db "$DB_NAME" \
+                        --argjson secret "$SECRET_JSON" \
+                        '{
+                            apiVersion: "v1",
+                            kind: "Secret",
+                            metadata: {
+                                name: $name,
+                                namespace: $ns,
+                                labels: {"app.kubernetes.io/name": "dotnet-api"}
+                            },
+                            type: "Opaque",
+                            stringData: {
+                                "ConnectionStrings__Rds": "Host=\\($host);Port=\\($port);Database=\\($db);Username=\\($secret.username);Password=\\($secret.password);SSL Mode=Require;Trust Server Certificate=true"
+                            }
+                        }' | kubectl apply -f -
+
                     unset SECRET_JSON
 
-                    envsubst "$VARS" < kubernetes/configmap.yaml  | kubectl apply -f -
+                    envsubst "$VARS" < kubernetes/configmap.yaml | kubectl apply -f -
                     envsubst "$VARS" < kubernetes/deployment.yaml | kubectl apply -f -
+
                     kubectl apply -f kubernetes/service.yaml
 
-                    # Ensure the bastion port-forward service is refreshed
                     sudo systemctl restart dotnet-api-port-forward || true
                 '''
             }
         }
 
-        // ---- 9. Wait for the rollout
+        // 9. Wait for deployment rollout
         stage('Wait for Rollout') {
             steps {
-                sh 'kubectl -n "$K8S_NAMESPACE_APP" rollout status deployment/"$DEPLOYMENT_NAME" --timeout=300s'
+                sh '''
+                    kubectl -n "$K8S_NAMESPACE_APP" \
+                        rollout status deployment/"$DEPLOYMENT_NAME" \
+                        --timeout=300s
+                '''
             }
         }
 
-        // ---- 10. Verify pods, service, and Nginx reverse proxy
+        // 10. Verify deployment and application
         stage('Verify') {
             steps {
                 sh '''
                     set -eu
+
                     kubectl -n "$K8S_NAMESPACE_APP" get pods -o wide
                     kubectl -n "$K8S_NAMESPACE_APP" get svc "$DEPLOYMENT_NAME"
                     kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME"
                     kubectl -n "$K8S_NAMESPACE_APP" get secret "$CONNECTION_SECRET" >/dev/null
 
-                    DESIRED=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" -o jsonpath='{.spec.replicas}')
-                    READY=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" -o jsonpath='{.status.readyReplicas}')
+                    DESIRED=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" \
+                        -o jsonpath='{.spec.replicas}')
+
+                    READY=$(kubectl -n "$K8S_NAMESPACE_APP" get deploy "$DEPLOYMENT_NAME" \
+                        -o jsonpath='{.status.readyReplicas}')
+
                     echo "Ready replicas: ${READY:-0}/$DESIRED"
+
                     [ "${READY:-0}" = "$DESIRED" ]
 
-                    ENDPOINTS=$(kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME" -o jsonpath='{.subsets[*].addresses[*].ip}')
-                    [ -n "$ENDPOINTS" ] || { echo "Service has no endpoints"; exit 1; }
+                    ENDPOINTS=$(kubectl -n "$K8S_NAMESPACE_APP" get endpoints "$DEPLOYMENT_NAME" \
+                        -o jsonpath='{.subsets[*].addresses[*].ip}')
 
-                    NOT_READY=$(kubectl -n "$K8S_NAMESPACE_APP" get pods -l app.kubernetes.io/name="$DEPLOYMENT_NAME" \
-                      --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
-                    [ "$NOT_READY" = "0" ] || { echo "One or more pods are not Running"; exit 1; }
-
-                    echo "Verifying local API connectivity through Nginx on the bastion..."
-                    sleep 3
-                    curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost/swagger/v1/swagger.json || {
-                      echo "API check via Nginx on bastion failed. Checking dotnet-api-port-forward status:"
-                      sudo systemctl status dotnet-api-port-forward || true
-                      exit 1
+                    [ -n "$ENDPOINTS" ] || {
+                        echo "Service has no endpoints"
+                        exit 1
                     }
-                    echo "API successfully reached through Nginx reverse proxy (port 80 -> port-forward 5000 -> EKS dotnet-api)!"
+
+                    NOT_READY=$(kubectl -n "$K8S_NAMESPACE_APP" get pods \
+                        -l app.kubernetes.io/name="$DEPLOYMENT_NAME" \
+                        --field-selector=status.phase!=Running \
+                        --no-headers 2>/dev/null | wc -l)
+
+                    [ "$NOT_READY" = "0" ] || {
+                        echo "One or more pods are not Running"
+                        exit 1
+                    }
+
+                    echo "Checking API through Nginx..."
+
+                    sleep 3
+
+                    curl -fsS -o /dev/null \
+                        -w "%{http_code}\\n" \
+                        http://localhost/swagger/v1/swagger.json || {
+                            echo "API check through Nginx failed."
+                            sudo systemctl status dotnet-api-port-forward || true
+                            exit 1
+                        }
+
+                    echo "API successfully reached through Nginx!"
                 '''
             }
         }
     }
 
     post {
+
         failure {
-            // Best effort: if a bad version was rolled out, go back to the previous one.
             sh '''
                 set -eu
+
                 if [ -f "$KUBECONFIG" ]; then
-                  echo "Rolling back deployment/$DEPLOYMENT_NAME in namespace $K8S_NAMESPACE_APP"
-                  kubectl -n "$K8S_NAMESPACE_APP" rollout undo deployment/"$DEPLOYMENT_NAME" || true
-                  kubectl -n "$K8S_NAMESPACE_APP" rollout status deployment/"$DEPLOYMENT_NAME" --timeout=180s || true
+                    echo "Attempting deployment rollback..."
+
+                    kubectl -n "$K8S_NAMESPACE_APP" \
+                        rollout undo deployment/"$DEPLOYMENT_NAME" || true
+
+                    kubectl -n "$K8S_NAMESPACE_APP" \
+                        rollout status deployment/"$DEPLOYMENT_NAME" \
+                        --timeout=180s || true
                 else
-                  echo "No kubeconfig from this build. Nothing to roll back."
+                    echo "No kubeconfig available. Skipping rollback."
                 fi
             '''
         }
-        // ---- 11. Clean up local Docker images and credentials
+
         always {
             sh '''
                 docker rmi "$ECR_REPOSITORY_URL:$IMAGE_TAG" || true
