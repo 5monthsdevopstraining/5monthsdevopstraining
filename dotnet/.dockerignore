@@ -1,0 +1,10 @@
+bin/
+obj/
+build-check/
+.git
+.vs
+.vscode
+*.md
+appsettings.Development.json
+Dockerfile
+.dockerignore
