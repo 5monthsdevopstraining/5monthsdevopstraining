@@ -50,8 +50,8 @@ pipeline {
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
               -v "$WORKSPACE:/src" -w "/src/$APP_DIR" \
-              mcr.microsoft.com/dotnet/sdk:8.0 bash -c '
-                apt-get update -qq && apt-get install -y -qq openjdk-17-jre-headless &&
+              mcr.microsoft.com/dotnet/sdk:10.0 bash -c '
+                apt-get update -qq && apt-get install -y -qq default-jre-headless &&
                 export PATH="$PATH:/root/.dotnet/tools" &&
                 dotnet tool install --global dotnet-sonarscanner &&
                 dotnet sonarscanner begin /k:"'"$SONAR_PROJECT"'" \

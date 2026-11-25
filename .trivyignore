@@ -1,0 +1,17 @@
+# Findings reviewed and accepted for this project (read by "trivy fs" from the repo root).
+# Remove a line to make Trivy report that finding again.
+
+# Deployer EC2 needs open egress: GitHub, Docker Hub, Helm, kubectl, Jenkins and ECR downloads
+AWS-0104
+
+# The public subnets host the deployer EC2 and the NAT gateway, which need public IPs
+AWS-0164
+
+# S3 buckets use SSE-S3 (AES256); a customer-managed KMS key is not needed here
+AWS-0132
+
+# EKS secrets encryption cannot be turned off once enabled: enable it as a separate change
+AWS-0039
+
+# deploy.tf can re-push the same tf-<hash> tag, which immutable ECR tags would reject
+AWS-0031
