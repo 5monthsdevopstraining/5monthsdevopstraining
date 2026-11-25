@@ -1,10 +1,10 @@
-#0## Jenkins on the deployer EC2 (installed by scripts/deployer.sh). Terraform configures it over SSH:
+# Jenkins on the deployer EC2 (installed by scripts/deployer.sh). Terraform configures it over SSH:
 #   /etc/eks-deploy.env       -> cluster, ECR, S3 and RDS settings read by eks/scripts/deploy-app.sh
-#   /var/lib/jenkins/casc.yaml -> admin user + the pipeline job (templates/jenkins-casc.yaml.tftpl)
+#   /var/lib/jenkins/casc.yaml -> admin user, SonarQube server + token, the pipeline job (templates/jenkins-casc.yaml.tftpl)
 # The job runs eks/Jenkinsfile on every push to var.github_branch (GitHub webhook, or polling every 2 min).
 #   UI:      terraform output jenkins_url   (user admin, password: terraform output -raw jenkins_admin_password)
 #   Webhook: terraform output github_webhook_url
-# ss
+# SonarQube runs in Docker on the same host (UI on :9000). Create a token there, set var.sonar_token, apply again.
 resource "random_password" "jenkins_admin" {
   length  = 20
   special = false
@@ -34,6 +34,7 @@ locals {
     job_name       = local.jenkins_job
     repo_url       = var.github_repo_url
     branch         = var.github_branch
+    sonar_token    = var.sonar_token
   })
 }
 
@@ -53,7 +54,7 @@ resource "terraform_data" "deployer_setup" {
 
   provisioner "remote-exec" {
     inline = [
-      "echo 'Waiting for user data (docker, kubectl, helm, Jenkins)...'",
+      "echo 'Waiting for user data (docker, kubectl, helm, Trivy, SonarQube, Jenkins)...'",
       "for i in $(seq 1 90); do [ -f /var/lib/eks-deployer-ready ] && break; sleep 10; done",
       "[ -f /var/lib/eks-deployer-ready ] || { sudo tail -30 /var/log/user-data.log; exit 1; }",
     ]
@@ -78,6 +79,12 @@ resource "terraform_data" "deployer_setup" {
       "echo 'Waiting for Jenkins to start...'",
       "for i in $(seq 1 60); do curl -s -o /dev/null -w '%%{http_code}' http://localhost:8080/login | grep -q 200 && break; sleep 5; done",
       "curl -fsS -o /dev/null http://localhost:8080/login && echo 'Jenkins is up'",
+      # SonarQube: wait for it, then register the webhook that waitForQualityGate needs.
+      # 172.17.0.1 = docker bridge, how the SonarQube container reaches Jenkins. The curl uses the default
+      # admin:admin login and is allowed to fail (|| true) once you change that password.
+      "echo 'Waiting for SonarQube...'",
+      "for i in $(seq 1 90); do curl -s localhost:9000/api/system/status | grep -q '\"status\":\"UP\"' && break; sleep 5; done",
+      "curl -s -u admin:admin -X POST localhost:9000/api/webhooks/create -d name=jenkins -d url=http://172.17.0.1:8080/sonarqube-webhook/ || true",
     ]
   }
 

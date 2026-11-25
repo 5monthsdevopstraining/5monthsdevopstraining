@@ -37,7 +37,7 @@ resource "aws_db_instance" "app" {
   instance_class = var.db_instance_class
 
   allocated_storage = 20
-  storage_type      = "gp3"
+  storage_type      = "gp2"
   storage_encrypted = true
 
   db_name                     = "appdb"
@@ -47,7 +47,7 @@ resource "aws_db_instance" "app" {
   db_subnet_group_name   = aws_db_subnet_group.app.name
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
-  availability_zone      = "ap-south-1c" 
+  # availability_zone      = "ap-south-1c" 
 
   backup_retention_period = 0    # training: no backups
   skip_final_snapshot     = true # training: destroy without a snapshot

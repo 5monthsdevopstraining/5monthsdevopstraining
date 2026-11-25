@@ -89,3 +89,7 @@ output "rds_secret_arn" {
   description = "Secrets Manager secret with the RDS master username/password"
   value       = aws_db_instance.app.master_user_secret[0].secret_arn
 }
+
+output "sonarqube_url" {
+  value = "http://${local.deployer_ip}:9000/"
+}

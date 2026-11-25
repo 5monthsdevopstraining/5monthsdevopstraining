@@ -88,7 +88,16 @@ resource "aws_vpc_security_group_ingress_rule" "jenkins_admin" {
   to_port           = 8080
   cidr_ipv4         = each.value
 }
+resource "aws_vpc_security_group_ingress_rule" "sonarqube_admin" {
+  for_each = toset(local.admin_cidrs)
 
+  security_group_id = aws_security_group.deployer.id
+  description       = "SonarQube UI"
+  ip_protocol       = "tcp"
+  from_port         = 9000
+  to_port           = 9000
+  cidr_ipv4         = each.value
+}
 resource "aws_vpc_security_group_ingress_rule" "jenkins_github" {
   for_each = toset(local.github_hook_cidrs)
 
@@ -126,7 +135,7 @@ resource "aws_instance" "deployer" {
   }
 
   root_block_device {
-    volume_size = 30 # docker build cache for the .NET SDK image
+    volume_size = 50 # docker build cache for the .NET SDK image
     volume_type = "gp3"
     encrypted   = true
   }

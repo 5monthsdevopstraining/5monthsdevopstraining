@@ -114,3 +114,9 @@ variable "console_admin_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "sonar_token" {
+  type      = string
+  sensitive = true
+  default   = ""
+}

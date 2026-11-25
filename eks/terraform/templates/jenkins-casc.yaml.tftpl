@@ -13,9 +13,30 @@ jenkins:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
 
+# SonarQube token. Skipped while var.sonar_token is empty (first apply, before the token exists),
+# so Jenkins still starts. Create the token in the SonarQube UI, set sonar_token, apply again.
+%{ if sonar_token != "" }
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "sonar-token"
+              description: "SonarQube analysis token"
+              secret: "${sonar_token}"
+%{ endif }
+
 unclassified:
   location:
     url: "${jenkins_url}"
+  # The name must match withSonarQubeEnv('sonarqube') in eks/Jenkinsfile.
+  # SonarQube runs in Docker on this same host (scripts/deployer.sh).
+  sonarGlobalConfiguration:
+    installations:
+      - name: "sonarqube"
+        serverUrl: "http://localhost:9000"
+        credentialsId: "sonar-token"
 
 jobs:
   - script: |
