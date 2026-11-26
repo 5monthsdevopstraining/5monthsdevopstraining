@@ -9,11 +9,12 @@ RUN apt-get update \
     && rm -rf /tmp/awscliv2.zip /tmp/aws-cli \
     && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
+    && curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 RUN jenkins-plugin-cli --plugins \
-    "configuration-as-code git pipeline-model-definition workflow-aggregator docker-workflow job-dsl"
+    "configuration-as-code git pipeline-model-definition workflow-aggregator docker-workflow job-dsl sonar"
 
 ENV CASC_JENKINS_CONFIG=/var/jenkins_home/casc_configs
 

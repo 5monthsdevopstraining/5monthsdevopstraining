@@ -1,11 +1,10 @@
-
 pipeline {
     agent any
 
     options {
         disableConcurrentBuilds()
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 40, unit: 'MINUTES')
     }
 
     parameters {
@@ -14,6 +13,7 @@ pipeline {
         string(name: 'EKS_CLUSTER_NAME', defaultValue: 'dotnet-app-dev-eks', description: 'EKS cluster name')
         string(name: 'PROJECT_FILE', defaultValue: 'app/dotnet.csproj', description: 'Path to the .NET project file')
         string(name: 'APP_DLL', defaultValue: 'dotnet.dll', description: 'Application DLL name')
+        string(name: 'SONARQUBE_URL', defaultValue: 'http://sonarqube:9000', description: 'SonarQube server URL')
     }
 
     stages {
@@ -28,11 +28,89 @@ pipeline {
                     command -v aws
                     command -v docker
                     command -v kubectl
+                    command -v trivy
+                    trivy --version
                 '''
             }
         }
 
-        stage('Build and Push') {
+        stage('Trivy FS Scan') {
+            steps {
+                sh '''
+                    set -e
+                    echo "Running Trivy filesystem vulnerability, secret, and misconfiguration scan..."
+                    trivy fs \
+                        --scanners vuln,secret,misconfig \
+                        --severity HIGH,CRITICAL \
+                        --no-progress \
+                        --exit-code 0 \
+                        -o trivy-fs-report.txt \
+                        .
+                    cat trivy-fs-report.txt
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-fs-report.txt', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                sh '''
+                    set -e
+                    echo "Checking SonarQube availability at ${SONARQUBE_URL}..."
+                    SONAR_UP="false"
+                    for i in $(seq 1 12); do
+                        if curl -sf "${SONARQUBE_URL}/api/system/status" | grep -q '"status":"UP"'; then
+                            SONAR_UP="true"
+                            break
+                        fi
+                        echo "Waiting for SonarQube to become ready ($i/12)..."
+                        sleep 10
+                    done
+
+                    if [ "${SONAR_UP}" != "true" ]; then
+                        echo "WARNING: SonarQube is not UP yet at ${SONARQUBE_URL}. Skipping scan so deployment is not blocked."
+                        exit 0
+                    fi
+
+                    TOKEN_RESP=$(curl -sf -u admin:admin -X POST "${SONARQUBE_URL}/api/user_tokens/generate?name=jenkins-build-${BUILD_NUMBER}" || true)
+                    SONAR_TOKEN=$(echo "${TOKEN_RESP}" | jq -r '.token // empty')
+
+                    if [ -z "${SONAR_TOKEN}" ]; then
+                        echo "Could not auto-generate SonarQube token with default credentials; attempting anonymous/login fallback..."
+                        AUTH_ARGS="/d:sonar.login=admin /d:sonar.password=admin"
+                    else
+                        AUTH_ARGS="/d:sonar.token=${SONAR_TOKEN}"
+                    fi
+
+                    echo "Running SonarScanner for .NET inside mcr.microsoft.com/dotnet/sdk:8.0..."
+                    docker run --rm \
+                        --network ci-net \
+                        --volumes-from jenkins \
+                        -w "${WORKSPACE}" \
+                        mcr.microsoft.com/dotnet/sdk:8.0 \
+                        bash -c "
+                            set -e
+                            dotnet tool install --global dotnet-sonarscanner --version 9.0.2 >/dev/null 2>&1 || dotnet tool install --global dotnet-sonarscanner >/dev/null 2>&1
+                            export PATH=\"\$PATH:/root/.dotnet/tools\"
+                            dotnet sonarscanner begin \
+                                /k:\"dotnet-app\" \
+                                /n:\"dotnet-app\" \
+                                /v:\"build-${BUILD_NUMBER}\" \
+                                /d:sonar.host.url=\"${SONARQUBE_URL}\" \
+                                ${AUTH_ARGS}
+                            dotnet build \"${PROJECT_FILE}\" --configuration Release
+                            dotnet sonarscanner end ${AUTH_ARGS}
+                        "
+                    echo "SonarQube analysis completed. View results at SonarQube UI port 9000."
+                '''
+            }
+        }
+
+        stage('Build Image') {
             steps {
                 sh '''
                     set -e
@@ -56,16 +134,52 @@ pipeline {
 
                     echo "${IMAGE_URI}" > .image-uri
 
+                    docker build \
+                        --build-arg PROJECT_FILE="${PROJECT_FILE}" \
+                        --build-arg APP_DLL="${APP_DLL}" \
+                        -t "${IMAGE_URI}" .
+                '''
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh '''
+                    set -e
+                    IMAGE_URI=$(cat .image-uri)
+                    echo "Running Trivy container image vulnerability scan on ${IMAGE_URI}..."
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --ignore-unfixed \
+                        --no-progress \
+                        --exit-code 0 \
+                        -o trivy-image-report.txt \
+                        "${IMAGE_URI}"
+                    cat trivy-image-report.txt
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-image-report.txt', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                    set -e
+
+                    export AWS_DEFAULT_REGION="${AWS_REGION}"
+
+                    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    IMAGE_URI=$(cat .image-uri)
+
                     aws ecr get-login-password --region "${AWS_REGION}" |
                         docker login \
                             --username AWS \
                             --password-stdin \
                             "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-                    docker build \
-                        --build-arg PROJECT_FILE="${PROJECT_FILE}" \
-                        --build-arg APP_DLL="${APP_DLL}" \
-                        -t "${IMAGE_URI}" .
 
                     docker push "${IMAGE_URI}"
 
@@ -131,6 +245,7 @@ pipeline {
                 if test -f .image-uri; then
                     docker rmi "$(cat .image-uri)" >/dev/null 2>&1 || true
                 fi
+                rm -f trivy-fs-report.txt trivy-image-report.txt
             '''
         }
     }

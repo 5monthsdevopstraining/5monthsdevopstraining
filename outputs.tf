@@ -44,6 +44,10 @@ output "jenkins_url" {
   value = "http://${module.jenkins.public_ip}:8080"
 }
 
+output "sonarqube_url" {
+  value = "http://${module.jenkins.public_ip}:9000"
+}
+
 output "jenkins_secret_arn" {
   value     = module.jenkins.secret_arn
   sensitive = true

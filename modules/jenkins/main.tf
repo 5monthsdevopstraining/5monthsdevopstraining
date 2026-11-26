@@ -21,6 +21,13 @@ resource "aws_security_group" "jenkins" {
   }
 
   ingress {
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
+  }
+
+  ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -140,27 +147,49 @@ locals {
     systemctl enable --now amazon-ssm-agent
 
     if ! swapon --show | grep -q /swapfile; then
-      fallocate -l 1G /swapfile
+      fallocate -l 4G /swapfile
       chmod 600 /swapfile
       mkswap /swapfile
       swapon /swapfile
       echo '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
 
+    sysctl -w vm.max_map_count=262144
+    echo 'vm.max_map_count=262144' >> /etc/sysctl.conf
+
     mkdir -p /opt/jenkins
     git clone --branch ${var.branch} --single-branch ${var.repository_url} /opt/jenkins
     cd /opt/jenkins
+
+    docker network create ci-net >/dev/null 2>&1 || true
 
     docker build -f Dockerfile.jenkins -t local/jenkins:lts .
     docker volume create jenkins_home
     docker rm -f jenkins >/dev/null 2>&1 || true
     docker run -d --name jenkins --restart unless-stopped \
+      --network ci-net \
       -p 8080:8080 -p 50000:50000 \
       -v jenkins_home:/var/jenkins_home \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v /opt/jenkins/jenkins:/var/jenkins_home/casc_configs:ro \
       -e JAVA_OPTS="-Xms256m -Xmx512m" \
       local/jenkins:lts
+
+    docker volume create sonarqube_data
+    docker volume create sonarqube_extensions
+    docker volume create sonarqube_logs
+    docker rm -f sonarqube >/dev/null 2>&1 || true
+    docker run -d --name sonarqube --restart unless-stopped \
+      --network ci-net \
+      -p 9000:9000 \
+      -v sonarqube_data:/opt/sonarqube/data \
+      -v sonarqube_extensions:/opt/sonarqube/extensions \
+      -v sonarqube_logs:/opt/sonarqube/logs \
+      -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+      -e SONAR_WEB_JAVAOPTS="-Xms128m -Xmx384m" \
+      -e SONAR_CE_JAVAOPTS="-Xms128m -Xmx384m" \
+      -e SONAR_SEARCH_JAVAOPTS="-Xms256m -Xmx512m" \
+      sonarqube:lts-community
 
     chmod 666 /var/run/docker.sock
   EOF
