@@ -55,7 +55,7 @@ fs.file-max=65536
 EOF
 sysctl --system
 
-until docker pull sonarqube:lts-community; do
+until docker pull sonarqube:community; do
   echo "sonarqube image pull failed, retrying in 10s"; sleep 10
 done
 
@@ -64,10 +64,11 @@ if ! docker ps -a --format '{{.Names}}' | grep -qx sonarqube; then
   docker run -d --name sonarqube --restart unless-stopped \
     -p 9000:9000 \
     -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+    -e SONAR_VALIDATEWEBHOOKS=false \
     -v sonarqube_data:/opt/sonarqube/data \
     -v sonarqube_extensions:/opt/sonarqube/extensions \
     -v sonarqube_logs:/opt/sonarqube/logs \
-    sonarqube:lts-community
+    sonarqube:community
 fi
 
 ########## Jenkins ##########
