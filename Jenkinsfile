@@ -15,6 +15,15 @@ pipeline {
         string(name: 'SONARQUBE_URL', defaultValue: 'http://sonarqube:9000', description: 'SonarQube server URL')
     }
 
+    environment {
+        AWS_REGION          = "${params.AWS_REGION ?: 'ap-south-1'}"
+        ECR_REPOSITORY_NAME = "${params.ECR_REPOSITORY_NAME ?: 'dotnet-app-dev/dotnet-app'}"
+        EKS_CLUSTER_NAME    = "${params.EKS_CLUSTER_NAME ?: 'dotnet-app-dev-eks'}"
+        PROJECT_FILE        = "${params.PROJECT_FILE ?: 'app/dotnet.csproj'}"
+        APP_DLL             = "${params.APP_DLL ?: 'dotnet.dll'}"
+        SONARQUBE_URL       = "${params.SONARQUBE_URL ?: 'http://sonarqube:9000'}"
+    }
+
     stages {
         stage('Validate') {
             steps {
