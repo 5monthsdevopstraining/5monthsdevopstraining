@@ -1,4 +1,4 @@
-# Private EKS cluster: the Kubernetes API has NO public endpoint (only reachable inside the VPC),
+## Private EKS cluster: the Kubernetes API has NO public endpoint (only reachable inside the VPC),
 # and the worker nodes run in the private subnets (outbound via the NAT gateway in vpc.tf).
 
 resource "aws_eks_cluster" "this" {
