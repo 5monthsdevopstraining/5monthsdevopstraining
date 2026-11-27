@@ -229,14 +229,12 @@ pipeline {
 
                     kubectl set env deployment/dotnet-app ConnectionStrings__Rds- >/dev/null 2>&1 || true
 
+                    IMAGE_URI=$(cat .image-uri)
+                    sed -i "s|REPLACE_WITH_ECR_REPOSITORY_URL:v1|${IMAGE_URI}|g" k8s/deployment.yaml
+
                     kubectl apply -f k8s/serviceaccount.yaml
                     kubectl apply -f k8s/service.yaml
                     kubectl apply -f k8s/deployment.yaml
-
-                    IMAGE_URI=$(cat .image-uri)
-
-                    kubectl set image deployment/dotnet-app \
-                        dotnet-app="${IMAGE_URI}"
 
                     kubectl rollout status deployment/dotnet-app --timeout=5m
 
