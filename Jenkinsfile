@@ -102,6 +102,7 @@ pipeline {
                         mcr.microsoft.com/dotnet/sdk:8.0 \
                         bash -c "
                             set -e
+                            apt-get update -qq && apt-get install -y -qq --no-install-recommends default-jre-headless >/dev/null
                             dotnet tool install --global dotnet-sonarscanner --version 9.0.2 >/dev/null 2>&1 || dotnet tool install --global dotnet-sonarscanner >/dev/null 2>&1
                             export PATH=\"\$PATH:/root/.dotnet/tools\"
                             dotnet sonarscanner begin \
@@ -109,6 +110,7 @@ pipeline {
                                 /n:\"dotnet-app\" \
                                 /v:\"build-${BUILD_NUMBER}\" \
                                 /d:sonar.host.url=\"${SONARQUBE_URL}\" \
+                                /d:sonar.scanner.scanAll=false \
                                 ${AUTH_ARGS}
                             dotnet build \"${PROJECT_FILE}\" --configuration Release
                             dotnet sonarscanner end ${AUTH_ARGS}
