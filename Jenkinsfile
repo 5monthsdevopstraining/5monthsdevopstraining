@@ -91,7 +91,7 @@ pipeline {
                         echo "Could not auto-generate SonarQube token with default credentials; attempting anonymous/login fallback..."
                         AUTH_ARGS="/d:sonar.login=admin /d:sonar.password=admin"
                     else
-                        AUTH_ARGS="/d:sonar.token=${SONAR_TOKEN}"
+                        AUTH_ARGS="/d:sonar.login=${SONAR_TOKEN}"
                     fi
 
                     echo "Running SonarScanner for .NET inside mcr.microsoft.com/dotnet/sdk:8.0..."
