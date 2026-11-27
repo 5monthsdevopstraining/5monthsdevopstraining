@@ -51,13 +51,13 @@ pipeline {
               -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
               -v "$WORKSPACE:/src" -w "/src/$APP_DIR" \
               mcr.microsoft.com/dotnet/sdk:10.0 bash -c '
-                apt-get update -qq && apt-get install -y -qq default-jre-headless &&
+                apt-get update -qq && apt-get install -y -qq openjdk-17-jre-headless &&
                 export PATH="$PATH:/root/.dotnet/tools" &&
-                dotnet tool install --global dotnet-sonarscanner &&
+                dotnet tool install --global dotnet-sonarscanner --version 11.3.0 &&
                 dotnet sonarscanner begin /k:"'"$SONAR_PROJECT"'" \
-                  /d:sonar.host.url="$SONAR_HOST_URL" /d:sonar.token="$SONAR_TOKEN" &&
+                  /d:sonar.host.url="$SONAR_HOST_URL" /d:sonar.login="$SONAR_TOKEN" &&
                 dotnet build -c Release &&
-                dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+                dotnet sonarscanner end /d:sonar.login="$SONAR_TOKEN"
               '
           '''
         }
