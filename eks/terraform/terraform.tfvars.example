@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars and adjust
+aws_region  = "ap-south-1"
+aws_profile = "saranya"
+project     = "sample"
+environment = "dev"
+owner       = "saranya"
+created_by  = "saranya"
+
+vpc_cidr = "10.20.0.0/16"
+
+kubernetes_version = "1.37"
+node_instance_type = "c7i-flex.large" # Free plan accounts can only launch Free Tier types
+node_desired_size  = 2
+
+deployer_instance_type = "c7i-flex.large" # runs Jenkins + the .NET build: needs 4 GB RAM
+
+# Who may SSH into the deployer and open Jenkins. [] = only your current public IP
+# admin_cidrs = ["203.0.113.10/32"]
+admin_cidrs = []
+
+# Jenkins deploys every push to this branch
+github_repo_url = "https://github.com/5monthsdevopstraining/5monthsdevopstraining.git"
+github_branch   = "saranya-eks-jenkins"
+
+db_instance_class = "db.t4g.micro"
+
+# Optional: identities you use in the AWS console (to see nodes/pods there), e.g.
+# console_admin_arns = ["arn:aws:iam::552969575417:user/another-user"]
+console_admin_arns = []

@@ -1,0 +1,66 @@
+# Jenkins Configuration as Code, rendered by eks/terraform/jenkins.tf to /var/lib/jenkins/casc.yaml.
+# Jenkins applies it at every start, so change it here (and terraform apply), not in the UI.
+jenkins:
+  systemMessage: "EKS sample app CI/CD - configured by Terraform (eks/terraform/jenkins.tf)"
+  numExecutors: 1
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${admin_password}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+# SonarQube token. Skipped while var.sonar_token is empty (first apply, before the token exists),
+# so Jenkins still starts. Create the token in the SonarQube UI, set sonar_token, apply again.
+%{ if sonar_token != "" }
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "sonar-token"
+              description: "SonarQube analysis token"
+              secret: "${sonar_token}"
+%{ endif }
+
+unclassified:
+  location:
+    url: "${jenkins_url}"
+  # The name must match withSonarQubeEnv('sonarqube') in eks/Jenkinsfile.
+  # SonarQube runs in Docker on this same host (scripts/deployer.sh).
+  sonarGlobalConfiguration:
+    installations:
+      - name: "sonarqube"
+        serverUrl: "http://localhost:9000"
+        credentialsId: "sonar-token"
+
+jobs:
+  - script: |
+      pipelineJob('${job_name}') {
+        description('Builds app/ and deploys it to the private EKS cluster on every push to ${branch}. Pipeline: eks/Jenkinsfile')
+        properties {
+          disableConcurrentBuilds()
+          pipelineTriggers {
+            triggers {
+              githubPush()                                  // GitHub webhook -> /github-webhook/
+              pollSCM { scmpoll_spec('H/2 * * * *') }       // fallback when no webhook is set up
+            }
+          }
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('${repo_url}') }
+                branch('*/${branch}')
+              }
+            }
+            scriptPath('eks/Jenkinsfile')
+            lightweight(false) // full checkout: records the repo/branch, so polling and the webhook work
+          }
+        }
+      }

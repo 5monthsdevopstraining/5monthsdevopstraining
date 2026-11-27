@@ -1,0 +1,101 @@
+// Pipeline for the private EKS deployment. Jenkins runs on the deployer EC2 inside the EKS VPC
+// (eks/terraform/jenkins.tf creates the job "eks-sample-app" that points here).
+// Every push to the branch (GitHub webhook, or polling every 2 minutes) runs:
+//   Trivy source scan -> SonarQube analysis + quality gate -> Trivy image scan ->
+//   build/push to ECR and roll out to the cluster with eks/scripts/deploy-app.sh.
+// Cluster, ECR, S3 and RDS settings come from /etc/eks-deploy.env (written by Terraform).
+
+pipeline {
+  agent any
+
+  triggers {
+    githubPush()            // instant, when the GitHub webhook is configured
+    pollSCM('H/2 * * * *')  // fallback: check the branch for new commits every ~2 minutes
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timeout(time: 45, unit: 'MINUTES')
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  environment {
+    SONAR_PROJECT = 'eks-sample-app'
+    APP_DIR       = 'app'                       // folder with the Dockerfile and .NET project
+    SCAN_IMAGE    = "scan-candidate:${BUILD_NUMBER}"
+  }
+
+  stages {
+    stage('Trivy: source scan') {
+      steps {
+        // NuGet dependencies, hardcoded secrets, Dockerfile/Terraform/k8s misconfigurations.
+        // exit-code 0 = report only; change to 1 once existing findings are fixed.
+        sh '''
+          trivy fs --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL --skip-dirs .terraform \
+            --exit-code 0 --format table .
+        '''
+      }
+    }
+
+    stage('SonarQube analysis') {
+      steps {
+        withSonarQubeEnv('sonarqube') {
+          // SonarScanner for .NET inside the SDK image: begin -> build -> end.
+          // The scanner needs Java, which the SDK image does not include.
+          // CHECK: match the sdk tag to your app's target framework.
+          sh '''
+            docker run --rm --network host \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+              -v "$WORKSPACE:/src" -w "/src/$APP_DIR" \
+              mcr.microsoft.com/dotnet/sdk:10.0 bash -c '
+                apt-get update -qq && apt-get install -y -qq default-jre-headless &&
+                export PATH="$PATH:/root/.dotnet/tools" &&
+                dotnet tool install --global dotnet-sonarscanner &&
+                dotnet sonarscanner begin /k:"'"$SONAR_PROJECT"'" \
+                  /d:sonar.host.url="$SONAR_HOST_URL" /d:sonar.token="$SONAR_TOKEN" &&
+                dotnet build -c Release &&
+                dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+              '
+          '''
+        }
+      }
+    }
+
+    stage('Quality gate') {
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+    stage('Trivy: image scan') {
+      steps {
+        // Builds the image only to scan it (cached layers make the real build in deploy-app.sh fast).
+        // exit-code 0 = report only; change to 1 to fail on fixable HIGH/CRITICAL vulnerabilities.
+        sh '''
+          docker build -t "$SCAN_IMAGE" "$APP_DIR"
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 0 --format table "$SCAN_IMAGE"
+        '''
+      }
+    }
+
+    stage('Build and deploy to EKS') {
+      steps {
+        // Image tag = build number + commit, so every build is traceable in ECR and in the pods
+        sh 'bash eks/scripts/deploy-app.sh "${BUILD_NUMBER}-$(git rev-parse --short HEAD)"'
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker rmi "$SCAN_IMAGE" || true'
+      cleanWs() // the workspace is a full copy of the repo; free the disk for docker
+    }
+  }
+}
