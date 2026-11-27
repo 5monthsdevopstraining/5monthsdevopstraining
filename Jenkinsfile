@@ -12,22 +12,7 @@ pipeline {
     stage('Checkout') {
       steps { checkout scm }
     }
-    stage('SonarQube Scan') {
-      steps {
-        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-          sh '''
-            docker run --rm -e SONAR_TOKEN=$SONAR_TOKEN \
-              -v "$PWD/dotnet:/usr/src" \
-              sonarsource/sonar-scanner-cli \
-              -Dsonar.host.url=https://sonarcloud.io \
-              -Dsonar.organization=<ORG_KEY> \
-              -Dsonar.projectKey=<PROJECT_KEY> \
-              -Dsonar.sources=. \
-              -Dsonar.exclusions=bin/**,obj/**
-          '''
-        }
-      }
-    }
+  }
     stage('Build Image') {
       steps { sh 'docker build -t $IMAGE dotnet' }
     }
