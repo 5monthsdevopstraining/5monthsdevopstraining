@@ -3,7 +3,7 @@ pipeline {
 
     options {
         disableConcurrentBuilds()
-        timeout(time: 40, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
     }
 
     parameters {
@@ -102,29 +102,12 @@ pipeline {
                             --network ci-net \
                             --volumes-from jenkins \
                             -w "${WORKSPACE}" \
+                            -e SONARQUBE_URL="${SONARQUBE_URL}" \
+                            -e SONAR_TOKEN="${SONAR_TOKEN}" \
+                            -e BUILD_NUMBER="${BUILD_NUMBER}" \
+                            -e PROJECT_FILE="${PROJECT_FILE}" \
                             mcr.microsoft.com/dotnet/sdk:8.0 \
-                            bash -c "
-                                set -e
-                                apt-get update -qq && apt-get install -y -qq --no-install-recommends default-jre-headless >/dev/null
-                                dotnet tool install --global dotnet-sonarscanner --version 9.0.2 >/dev/null 2>&1 || dotnet tool install --global dotnet-sonarscanner >/dev/null 2>&1
-                                export PATH=\"\$PATH:/root/.dotnet/tools\"
-                                rm -rf ./TestResults
-                                dotnet sonarscanner begin \
-                                    /k:\"dotnet-app\" \
-                                    /n:\"dotnet-app\" \
-                                    /v:\"build-${BUILD_NUMBER}\" \
-                                    /d:sonar.host.url=\"${SONARQUBE_URL}\" \
-                                    /d:sonar.scanner.scanAll=false \
-                                    /d:sonar.cs.opencover.reportsPaths=\"**/coverage.opencover.xml\" \
-                                    ${AUTH_ARGS}
-                                dotnet build \"${PROJECT_FILE}\" --configuration Release
-                                dotnet test tests/dotnet.Tests/dotnet.Tests.csproj \
-                                    --configuration Release \
-                                    --collect:\"XPlat Code Coverage\" \
-                                    --results-directory ./TestResults \
-                                    -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
-                                dotnet sonarscanner end ${AUTH_ARGS}
-                            "
+                            bash jenkins/sonar-scan.sh
                         echo "SonarQube analysis completed. View results at SonarQube UI port 9000."
                     '''
                 }
