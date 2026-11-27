@@ -391,43 +391,45 @@ docker run --rm -p 8080:8080 \
   dotnet-app:test
 ```
 
-## 14. Jenkins pipeline stages
+## 14. Jenkins pipeline stages & DevSecOps (SonarQube + Trivy)
 
-The `Jenkinsfile` automates the entire CI/CD lifecycle across three declarative stages:
+The Jenkins EC2 host (`modules/jenkins/main.tf`) runs both **Jenkins** (port `8080`) and **SonarQube 9.9 LTS Community** (port `9000`) on a shared Docker bridge network (`ci-net`) with 4 GB swap and `vm.max_map_count=262144`. **Trivy** (`v0.76.2`) and the static **Docker CLI** (`27.3.1`) are baked into `Dockerfile.jenkins`.
+
+The `Jenkinsfile` automates the full DevSecOps CI/CD lifecycle across seven declarative stages:
 
 ### Stage 1: Validate
-
 Verifies prerequisite CLI tools and configuration inside the Jenkins container:
 * Project file `app/dotnet.csproj` existence
-* `aws` CLI availability
-* `docker` CLI and daemon socket reachability
-* `kubectl` binary availability
+* `aws` CLI, `docker` CLI, `kubectl`, and `trivy` availability
 
-### Stage 2: Build and Push
+### Stage 2: Trivy FS Scan
+Scans source code, NuGet dependencies, secrets, and Kubernetes manifests for `HIGH` and `CRITICAL` vulnerabilities (`trivy fs --scanners vuln,secret,misconfig`) and archives `trivy-fs-report.txt`.
 
-Uses the Jenkins EC2 IAM role:
-1. Obtains the caller AWS Account ID and describes the ECR repository.
-2. Authenticates Docker to Amazon ECR (`aws ecr get-login-password`).
-3. Determines the short commit hash (`git rev-parse --short=12 HEAD`).
-4. Builds the container image tagged as `build-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}`.
-5. Pushes the Docker image to Amazon ECR.
-6. Writes the image URI to `.image-uri` for downstream stages.
+### Stage 3: SonarQube Analysis
+Runs static application security testing (SAST) on the .NET 8 codebase:
+1. Verifies SonarQube is `UP` at `http://sonarqube:9000` and generates an analysis token via `/api/user_tokens/generate`.
+2. Launches `mcr.microsoft.com/dotnet/sdk:8.0` on `--network ci-net` with `--volumes-from jenkins` (sharing the Jenkins workspace) and installs `default-jre-headless` + `dotnet-sonarscanner`.
+3. Runs `dotnet sonarscanner begin` (using `/d:sonar.login=${SONAR_TOKEN}`), `dotnet build app/dotnet.csproj --configuration Release`, and `dotnet sonarscanner end` to publish code quality and security metrics to SonarQube.
 
-### Stage 3: Deploy to EKS
+### Stage 4: Build Image
+Uses the Jenkins EC2 IAM role to look up the ECR repository URI and build the Docker image tagged as `build-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}`.
 
+### Stage 5: Trivy Image Scan
+Scans the newly built container image (`trivy image --severity HIGH,CRITICAL --ignore-unfixed`) and archives `trivy-image-report.txt`.
+
+### Stage 6: Push to ECR
+Authenticates Docker to Amazon ECR (`aws ecr get-login-password`) and pushes the scanned image.
+
+### Stage 7: Deploy to EKS
 Deploys the workload to the private Amazon EKS cluster:
 1. Updates `kubeconfig` for cluster `dotnet-app-dev-eks`.
-2. **Secrets Manager Integration:** Dynamically fetches database credentials from AWS Secrets Manager (`dotnet-app-dev-postgres-credentials`), parses host, port, dbname, username, and password using `jq`, and creates/updates the Kubernetes Secret `dotnet-app-db` with the connection string. No passwords exist in source code or manifests.
-3. Applies `k8s/serviceaccount.yaml` to configure IAM Roles for Service Accounts (IRSA).
-4. Applies `k8s/service.yaml` to expose the application via LoadBalancer.
-5. Applies `k8s/deployment.yaml` with container port 8080, readiness/liveness probes, and resource limits.
-6. Sets the new container image (`kubectl set image deployment/dotnet-app dotnet-app=${IMAGE_URI}`).
-7. Verifies rollout completion (`kubectl rollout status deployment/dotnet-app --timeout=5m`).
-8. Logs the status of active pods and services.
+2. **Secrets Manager Integration:** Dynamically fetches database credentials from AWS Secrets Manager (`dotnet-app-dev-postgres-credentials`), parses host, port, dbname, username, and password using `jq`, and creates/updates the Kubernetes Secret `dotnet-app-db` with the connection string.
+3. Substitutes the ECR image URI into `k8s/deployment.yaml` (using `rollingUpdate` with `maxSurge: 0, maxUnavailable: 1` for `t3.micro` pod capacity).
+4. Applies `k8s/serviceaccount.yaml` (IRSA), `k8s/service.yaml` (LoadBalancer), and `k8s/deployment.yaml`.
+5. Verifies rollout completion (`kubectl rollout status deployment/dotnet-app --timeout=5m`).
 
 ### Post-Build Cleanup
-
-Deletes the locally cached Docker image on the Jenkins host to conserve disk space on small instances.
+Deletes the locally cached Docker image and temporary Trivy report files on the Jenkins host.
 
 ## 15. Run the pipeline
 
@@ -643,42 +645,40 @@ Internet-facing exposure is not enabled by default. Before enabling it, review p
 
 ## 18B. End-to-End Test Verification Evidence
 
+### 0. Jenkins DevSecOps Pipeline (SonarQube & Trivy)
+* **Jenkins Build #8:** `Finished: SUCCESS` (`build-8-f2b1f2541653`)
+* **SonarQube (`dotnet-app`):** Quality Gate `alert_status: OK` (`0` bugs, `0` vulnerabilities, `2` code smells, `1` security hotspot, `333` NCLOC)
+* **Trivy (`v0.76.2`):** Executed both `trivy fs` and `trivy image` scans and archived `trivy-fs-report.txt` & `trivy-image-report.txt`.
+
 ### 1. Swagger UI Availability
 
 ```bash
-curl -I http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com/swagger/index.html
+curl -I http://a25c1e13e2ba64ba183046939af0873a-1576608353.ap-south-1.elb.amazonaws.com/swagger/index.html
 ```
 
 Output:
 ```text
 HTTP/1.1 200 OK
-Content-Length: 735
-Content-Type: text/html;charset=utf-8
-Server: Kestrel
 ```
 
 ### 2. Document Upload via API
 
 ```bash
-echo "%PDF-1.4 test document content for AWS EKS deployment" > /tmp/test-document.pdf
-curl -s -X POST -F "file=@/tmp/test-document.pdf;type=application/pdf" \
-  http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com/api/files/upload | jq .
+echo "%PDF-1.4 DevSecOps EKS test with SonarQube and Trivy" > /tmp/devsecops-test.pdf
+curl -s -X POST -F "file=@/tmp/devsecops-test.pdf;type=application/pdf" \
+  http://a25c1e13e2ba64ba183046939af0873a-1576608353.ap-south-1.elb.amazonaws.com/api/files/upload | jq .
 ```
 
 Output:
 ```json
 {
-  "id": "bac0f8d0-e667-4f26-995e-bf61a3eb73bb",
-  "fileName": "test-document.pdf",
+  "id": "68bb890e-8414-4cd4-b466-ae1c935f0ae6",
+  "fileName": "devsecops-test.pdf",
   "s3BucketName": "dotnet-app-dev-artifacts",
-  "s3ObjectKey": "training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf",
+  "s3ObjectKey": "training-uploads/68bb890e84144cd4b466ae1c935f0ae6.pdf",
   "contentType": "application/pdf",
-  "fileSize": 54,
-  "uploadedAt": "2026-11-18T19:59:55.4774256Z",
-  "bucket": "dotnet-app-dev-artifacts",
-  "key": "training-uploads/bac0f8d0e6674f26995ebf61a3eb73bb.pdf",
-  "originalFileName": "test-document.pdf",
-  "sizeBytes": 54
+  "fileSize": 53,
+  "uploadedAt": "2026-11-27T00:27:58.9132644Z"
 }
 ```
 
@@ -781,7 +781,32 @@ Output:
   chmod +x /usr/local/bin/kubectl
   ```
 
-### 5. Jenkins shows HTTP 503
+### 5. Fresh `terraform apply` Error: `Invalid count argument` on `module.eks` S3 IAM Role
+
+* **Symptom:** `terraform apply` fails before planning with `The "count" value depends on resource attributes that cannot be determined until apply` on `modules/eks/iam.tf`.
+* **Resolution:** Apply `module.s3` first so `bucket_arn` is known, then apply the remaining infrastructure:
+  ```bash
+  terraform apply -target=module.s3 -auto-approve
+  terraform apply -auto-approve
+  ```
+
+### 6. `docker` CLI Missing in `jenkins/jenkins:lts`
+
+* **Symptom:** `command -v docker` returns exit code `127` even when `docker.io` is in `apt-get install --no-install-recommends`.
+* **Resolution:** Install the official static Docker CLI binary directly into `/usr/local/bin/docker` in `Dockerfile.jenkins`.
+
+### 7. SonarScanner for .NET Fails (`java` Missing or `sonar.token` Rejected on SonarQube 9.9 LTS)
+
+* **Symptom:** `dotnet sonarscanner end` fails with `Could not find 'java' executable` or `Not authorized. Please provide a user token in sonar.login`.
+* **Resolution:** Install `default-jre-headless` inside the `mcr.microsoft.com/dotnet/sdk:8.0` scanner container and pass `/d:sonar.login=${SONAR_TOKEN}` instead of `/d:sonar.token`.
+
+### 8. Rolling Update Stalls on `t3.micro` EKS Nodes (`0/1 Pending`)
+
+* **Symptom:** During a rolling update with `replicas: 2`, the new 3rd pod stays `Pending` and `kubectl rollout status` times out.
+* **Root Cause:** `t3.micro` nodes have a strict pod-per-ENI limit, so default `maxSurge: 25%` cannot schedule a 3rd pod before terminating an old one.
+* **Resolution:** Set `rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }` in `k8s/deployment.yaml` so Kubernetes terminates one old pod before starting a replacement.
+
+### 9. Jenkins shows HTTP 503
 
 This may mean Jenkins is starting, has a plugin error, or Configuration as Code failed.
 
