@@ -5,5 +5,5 @@ tfplan*
 crash.log
 backend.hcl
 TestResults/
-*/bin/
-*/obj/
+bin/
+obj/

@@ -66,64 +66,68 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                sh '''
-                    set -e
-                    echo "Checking SonarQube availability at ${SONARQUBE_URL}..."
-                    SONAR_UP="false"
-                    for i in $(seq 1 12); do
-                        if curl -sf "${SONARQUBE_URL}/api/system/status" | grep -q '"status":"UP"'; then
-                            SONAR_UP="true"
-                            break
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_CRED_TOKEN')]) {
+                    sh '''
+                        set -e
+                        echo "Checking SonarQube availability at ${SONARQUBE_URL}..."
+                        SONAR_UP="false"
+                        for i in $(seq 1 12); do
+                            if curl -sf "${SONARQUBE_URL}/api/system/status" | grep -q '"status":"UP"'; then
+                                SONAR_UP="true"
+                                break
+                            fi
+                            echo "Waiting for SonarQube to become ready ($i/12)..."
+                            sleep 10
+                        done
+
+                        if [ "${SONAR_UP}" != "true" ]; then
+                            echo "WARNING: SonarQube is not UP yet at ${SONARQUBE_URL}. Skipping scan so deployment is not blocked."
+                            exit 0
                         fi
-                        echo "Waiting for SonarQube to become ready ($i/12)..."
-                        sleep 10
-                    done
 
-                    if [ "${SONAR_UP}" != "true" ]; then
-                        echo "WARNING: SonarQube is not UP yet at ${SONARQUBE_URL}. Skipping scan so deployment is not blocked."
-                        exit 0
-                    fi
+                        SONAR_TOKEN="${SONAR_CRED_TOKEN}"
+                        if [ -z "${SONAR_TOKEN}" ]; then
+                            TOKEN_RESP=$(curl -sf -u admin:admin -X POST "${SONARQUBE_URL}/api/user_tokens/generate?name=jenkins-build-${BUILD_NUMBER}" || true)
+                            SONAR_TOKEN=$(echo "${TOKEN_RESP}" | jq -r '.token // empty')
+                        fi
 
-                    TOKEN_RESP=$(curl -sf -u admin:admin -X POST "${SONARQUBE_URL}/api/user_tokens/generate?name=jenkins-build-${BUILD_NUMBER}" || true)
-                    SONAR_TOKEN=$(echo "${TOKEN_RESP}" | jq -r '.token // empty')
+                        if [ -z "${SONAR_TOKEN}" ]; then
+                            AUTH_ARGS="/d:sonar.login=admin /d:sonar.password=admin"
+                        else
+                            AUTH_ARGS="/d:sonar.login=${SONAR_TOKEN}"
+                        fi
 
-                    if [ -z "${SONAR_TOKEN}" ]; then
-                        echo "Could not auto-generate SonarQube token with default credentials; attempting anonymous/login fallback..."
-                        AUTH_ARGS="/d:sonar.login=admin /d:sonar.password=admin"
-                    else
-                        AUTH_ARGS="/d:sonar.login=${SONAR_TOKEN}"
-                    fi
-
-                    echo "Running SonarScanner for .NET inside mcr.microsoft.com/dotnet/sdk:8.0..."
-                    docker run --rm \
-                        --network ci-net \
-                        --volumes-from jenkins \
-                        -w "${WORKSPACE}" \
-                        mcr.microsoft.com/dotnet/sdk:8.0 \
-                        bash -c "
-                            set -e
-                            apt-get update -qq && apt-get install -y -qq --no-install-recommends default-jre-headless >/dev/null
-                            dotnet tool install --global dotnet-sonarscanner --version 9.0.2 >/dev/null 2>&1 || dotnet tool install --global dotnet-sonarscanner >/dev/null 2>&1
-                            export PATH=\"\$PATH:/root/.dotnet/tools\"
-                            rm -rf ./TestResults
-                            dotnet sonarscanner begin \
-                                /k:\"dotnet-app\" \
-                                /n:\"dotnet-app\" \
-                                /v:\"build-${BUILD_NUMBER}\" \
-                                /d:sonar.host.url=\"${SONARQUBE_URL}\" \
-                                /d:sonar.scanner.scanAll=false \
-                                /d:sonar.cs.opencover.reportsPaths=\"**/coverage.opencover.xml\" \
-                                ${AUTH_ARGS}
-                            dotnet build \"${PROJECT_FILE}\" --configuration Release
-                            dotnet test tests/dotnet.Tests/dotnet.Tests.csproj \
-                                --configuration Release \
-                                --collect:\"XPlat Code Coverage\" \
-                                --results-directory ./TestResults \
-                                -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
-                            dotnet sonarscanner end ${AUTH_ARGS}
-                        "
-                    echo "SonarQube analysis completed. View results at SonarQube UI port 9000."
-                '''
+                        echo "Running SonarScanner for .NET inside mcr.microsoft.com/dotnet/sdk:8.0..."
+                        docker run --rm \
+                            --network ci-net \
+                            --volumes-from jenkins \
+                            -w "${WORKSPACE}" \
+                            mcr.microsoft.com/dotnet/sdk:8.0 \
+                            bash -c "
+                                set -e
+                                apt-get update -qq && apt-get install -y -qq --no-install-recommends default-jre-headless >/dev/null
+                                dotnet tool install --global dotnet-sonarscanner --version 9.0.2 >/dev/null 2>&1 || dotnet tool install --global dotnet-sonarscanner >/dev/null 2>&1
+                                export PATH=\"\$PATH:/root/.dotnet/tools\"
+                                rm -rf ./TestResults
+                                dotnet sonarscanner begin \
+                                    /k:\"dotnet-app\" \
+                                    /n:\"dotnet-app\" \
+                                    /v:\"build-${BUILD_NUMBER}\" \
+                                    /d:sonar.host.url=\"${SONARQUBE_URL}\" \
+                                    /d:sonar.scanner.scanAll=false \
+                                    /d:sonar.cs.opencover.reportsPaths=\"**/coverage.opencover.xml\" \
+                                    ${AUTH_ARGS}
+                                dotnet build \"${PROJECT_FILE}\" --configuration Release
+                                dotnet test tests/dotnet.Tests/dotnet.Tests.csproj \
+                                    --configuration Release \
+                                    --collect:\"XPlat Code Coverage\" \
+                                    --results-directory ./TestResults \
+                                    -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+                                dotnet sonarscanner end ${AUTH_ARGS}
+                            "
+                        echo "SonarQube analysis completed. View results at SonarQube UI port 9000."
+                    '''
+                }
             }
         }
 
