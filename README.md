@@ -1,6 +1,6 @@
 # .NET on private EKS
 
-For the complete repeatable implementation process, see [TASK_DOCUMENTATION.md](TASK_DOCUMENTATION.md).
+For the complete repeatable implementation process, see [TASK_DOCUMENTATION.md](TASK_DOCUMENTATION.md). For day-to-day operations and incident playbooks, see [RUNBOOK.md](RUNBOOK.md).
 
 This project provisions a VPC, an ECR repository, an SSM-only bastion host, and a private-endpoint EKS cluster. The application is deployed from the `k8s/` manifests behind an internal AWS load balancer.
 
@@ -36,7 +36,10 @@ Set `kubernetes_version` to one of the returned supported versions. The default 
 
 ## Deploy infrastructure
 
+On a fresh stack, create the S3 module first so `module.s3.bucket_arn` is known for the EKS IRSA count condition, then apply the rest:
+
 ```sh
+terraform apply -target=module.s3 -auto-approve
 terraform plan -out=tfplan
 terraform apply tfplan
 terraform output
@@ -126,33 +129,20 @@ aws secretsmanager get-secret-value \
 
 Use `terraform output -raw rds_endpoint` for the database hostname and `terraform output -raw s3_bucket_name` for the artifact bucket name. Keep RDS and the Jenkins EC2 instance private/public exposure as appropriate for the environment.
 
-## Jenkins CI/CD pipeline
+## Jenkins CI/CD & DevSecOps pipeline (SonarQube + Trivy)
 
-The Terraform configuration creates an Amazon Linux EC2 Jenkins host in the public subnet and runs Jenkins in Docker. The EC2 instance uses an IAM role, Docker, AWS CLI, and `kubectl`. Its security group allows the private EKS endpoint and Jenkins web port access.
+The Terraform configuration creates an Amazon Linux 2023 EC2 host in the public subnet (`4 GB` swap, `vm.max_map_count=262144`) running both **Jenkins** (port `8080`) and **SonarQube 9.9 LTS Community** (port `9000`) on a shared `ci-net` Docker bridge network. The Jenkins container (`Dockerfile.jenkins`) includes **Trivy** (`v0.76.2`), static **Docker CLI**, AWS CLI v2, and `kubectl`.
 
-The EC2 role provides ECR push and EKS describe access. Jenkins itself should be configured with no AWS access keys. Create AWS credentials only if Jenkins runs outside EC2.
+The EC2 role provides ECR push, EKS describe, and Secrets Manager read access. Jenkins uses no static AWS access keys.
 
-To grant Jenkins Kubernetes administration in Terraform, add the Jenkins IAM role or user and its worker security group:
+The `Jenkinsfile` automates the full DevSecOps pipeline for branch `manoj-eks-jenkins`:
 
-```hcl
-jenkins_principal_arns = {
-  jenkins = "arn:aws:iam::123456789012:role/JenkinsEKSDeployRole"
-}
-
-jenkins_security_group_ids = {
-  jenkins = "sg-0123456789abcdef0"
-}
-```
-
-Apply the Terraform changes before running the pipeline. Jenkins must run inside the VPC, through a VPN or Direct Connect, or otherwise have private routing and DNS access to the cluster endpoint.
-
-Create a Jenkins Pipeline job that uses the repository Jenkinsfile. Configure the pipeline parameters for the actual `.csproj` and DLL names if they differ from the defaults. The pipeline:
-
-1. validates the .NET project and required CLIs;
-2. authenticates to ECR and builds the Docker image;
-3. pushes a unique build-number image tag;
-4. updates the `kubeconfig`;
-5. applies the Kubernetes manifests and the new image;
-6. waits for a successful rollout.
+1. **Validate:** Verifies `app/dotnet.csproj`, `aws`, `docker`, `kubectl`, and `trivy`.
+2. **Trivy FS Scan:** Scans source code, NuGet dependencies, secrets, and Kubernetes manifests (`trivy-fs-report.txt` archived).
+3. **SonarQube Analysis:** Runs `dotnet-sonarscanner` inside `mcr.microsoft.com/dotnet/sdk:8.0` on `ci-net` and publishes SAST results to `http://sonarqube:9000`.
+4. **Build Image:** Builds the .NET 8 multi-stage Docker image (`build-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}`).
+5. **Trivy Image Scan:** Scans the built image for `HIGH`/`CRITICAL` CVEs (`trivy-image-report.txt` archived).
+6. **Push to ECR:** Authenticates to ECR via IAM and pushes the scanned image.
+7. **Deploy to EKS:** Fetches RDS credentials from AWS Secrets Manager into Kubernetes Secret `dotnet-app-db`, substitutes the ECR image URI into `k8s/deployment.yaml` (`maxSurge: 0, maxUnavailable: 1` for `t3.micro` capacity), applies `k8s/serviceaccount.yaml` (IRSA), `k8s/service.yaml`, and `k8s/deployment.yaml`, and verifies rollout.
 
 The EC2 setup also loads Jenkins Configuration as Code and creates a `dotnet-eks-cicd` Pipeline job for branch `manoj-eks-jenkins`. For a private GitHub repository, add a Jenkins Username with token credential named `github-credentials`, then update `jenkins/casc.yaml` to reference it. Do not paste the PAT or AWS access keys into Jenkinsfile or Terraform files.

@@ -11,10 +11,11 @@
 
 | Component | Identifier / Resource | Connection / URL |
 | :--- | :--- | :--- |
-| **Public LoadBalancer** | AWS Classic / NLB DNS | `http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com` |
-| **API Swagger UI** | OpenAPI 3.0 Documentation | `http://<LOAD_BALANCER_DNS>/swagger/index.html` |
-| **Jenkins CI/CD** | `i-00dfaf15f8f10664a` | `http://13.235.134.118:8080/` |
-| **Bastion Host** | `i-0ab35eb0f90ce1776` | Private IP: `10.0.10.143` (Access via AWS SSM) |
+| **Public LoadBalancer** | AWS Classic / NLB DNS | `http://a25c1e13e2ba64ba183046939af0873a-1576608353.ap-south-1.elb.amazonaws.com` |
+| **API Swagger UI** | OpenAPI 3.0 Documentation | `http://a25c1e13e2ba64ba183046939af0873a-1576608353.ap-south-1.elb.amazonaws.com/swagger/index.html` |
+| **Jenkins CI/CD** | `i-0b99cf3e041f6d247` | `http://65.0.55.41:8080/` |
+| **SonarQube SAST** | `sonarqube:lts-community` | `http://65.0.55.41:9000/` (Docker internal: `http://sonarqube:9000`) |
+| **Bastion Host** | `i-0ef844a85fc391b7c` | Access via AWS SSM |
 | **PostgreSQL RDS** | `dotnet-app-dev-postgres` | `dotnet-app-dev-postgres.cjiwkuog0e9g.ap-south-1.rds.amazonaws.com:5432` |
 | **S3 Artifact Bucket** | Private S3 Storage | `s3://dotnet-app-dev-artifacts` (Key prefix: `training-uploads/`) |
 | **ECR Registry** | Container Image Repo | `123806349463.dkr.ecr.ap-south-1.amazonaws.com/dotnet-app-dev/dotnet-app` |
@@ -31,7 +32,7 @@ Connect securely without SSH keys using AWS Systems Manager (SSM):
 
 ```bash
 aws ssm start-session \
-  --target i-0ab35eb0f90ce1776 \
+  --target i-0ef844a85fc391b7c \
   --region ap-south-1
 ```
 
@@ -85,12 +86,16 @@ SELECT id, file_name, file_size, content_type, uploaded_at FROM uploaded_files O
 ## 3. Deployment & CI/CD Operations
 
 ### 3.1. Standard Release via Jenkins
-1. Open Jenkins: `http://13.235.134.118:8080/job/dotnet-eks-cicd/`.
+1. Open Jenkins: `http://65.0.55.41:8080/job/dotnet-eks-cicd/`.
 2. Click **Build with Parameters** (or **Build Now**).
-3. Pipeline will automatically execute:
-   * **Validate:** Check `aws`, `docker`, and `kubectl` binaries.
-   * **Build and Push:** Compile .NET 8 Release container, tag with `build-<ID>-<COMMIT>`, and push to Amazon ECR.
-   * **Deploy to EKS:** Fetch RDS credentials from Secrets Manager, update K8s Secret `dotnet-app-db`, apply manifests, and rollout new image.
+3. Pipeline will automatically execute 7 DevSecOps stages:
+   * **Validate:** Check `aws`, `docker`, `kubectl`, and `trivy` binaries.
+   * **Trivy FS Scan:** Scan repo dependencies, secrets, and K8s manifests (`trivy-fs-report.txt` archived).
+   * **SonarQube Analysis:** Run `dotnet-sonarscanner` inside `mcr.microsoft.com/dotnet/sdk:8.0` and publish SAST metrics to `http://sonarqube:9000`.
+   * **Build Image:** Compile .NET 8 Release container tagged `build-<ID>-<COMMIT>`.
+   * **Trivy Image Scan:** Scan container image for `HIGH`/`CRITICAL` CVEs (`trivy-image-report.txt` archived).
+   * **Push to ECR:** Authenticate via EC2 IAM role and push image to Amazon ECR.
+   * **Deploy to EKS:** Fetch RDS credentials from Secrets Manager, update K8s Secret `dotnet-app-db`, substitute image URI, apply manifests (`maxSurge: 0, maxUnavailable: 1`), and verify rollout.
 
 ### 3.2. Rolling Back a Deployment
 If an unhealthy build is deployed, initiate an immediate zero-downtime rollback:
@@ -125,7 +130,7 @@ kubectl set image deployment/dotnet-app \
 Execute this 4-step script to verify all layers (Ingress -> Pod -> S3 -> RDS):
 
 ```bash
-LB_URL="http://a15cceb66e8324548bab98dce3caa0f8-1354676405.ap-south-1.elb.amazonaws.com"
+LB_URL="http://a25c1e13e2ba64ba183046939af0873a-1576608353.ap-south-1.elb.amazonaws.com"
 
 # 1. Database Connection Check
 curl -s -f "$LB_URL/api/database/connection" | jq .
@@ -229,23 +234,25 @@ kubectl describe deployment dotnet-app
 
 ---
 
-### Playbook 5: Jenkins EC2 Host Out of Memory (OOM) / Unresponsive
-* **Symptoms:** Jenkins web UI returns HTTP 503 or drops connections.
+### Playbook 5: Jenkins / SonarQube EC2 Host Out of Memory (OOM) / Unresponsive
+* **Symptoms:** Jenkins (`:8080`) or SonarQube (`:9000`) returns HTTP 503 or drops connections.
 * **Diagnosis & Recovery:**
-  1. Connect to Jenkins via SSM:
+  1. Connect to Jenkins EC2 via SSM:
      ```bash
-     aws ssm start-session --target i-00dfaf15f8f10664a --region ap-south-1
+     aws ssm start-session --target i-0b99cf3e041f6d247 --region ap-south-1
      ```
-  2. Check memory & disk:
+  2. Check memory, swap (4 GB), disk, and container status:
      ```bash
      free -m
+     swapon --show
      df -h
-     docker ps
+     docker ps -a
+     curl -s http://localhost:9000/api/system/status
      ```
-  3. Reclaim disk space and restart container if stopped:
+  3. Reclaim disk space and restart containers if stopped:
      ```bash
-     docker system prune -af --volumes
-     docker restart jenkins
+     docker system prune -af
+     docker restart sonarqube jenkins
      ```
 
 ---
